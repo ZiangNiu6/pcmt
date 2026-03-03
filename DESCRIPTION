@@ -1,0 +1,23 @@
+Package: pcmt
+Title: Permutation-Calibrated Conditional Independence Tests
+Version: 0.1.0
+Authors@R:
+    person("Ziang", "Niu", role = c("aut", "cre"),
+           email = "ziangniu@example.com")
+Description: Permutation-calibrated variants of the generalised covariance measure
+    (GCM), projected covariance measure (PCM), and weighted GCM (WGCM) tests for
+    conditional independence. These tests achieve exact validity under a strong
+    exchangeable null and asymptotic validity under the weaker conditional null,
+    providing two-way robustness. Built on top of the 'comets' package regression
+    infrastructure.
+License: GPL (>= 3)
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Imports:
+    comets,
+    stats
+Suggests:
+    testthat (>= 3.0.0),
+    ggplot2
+Config/testthat/edition: 3
