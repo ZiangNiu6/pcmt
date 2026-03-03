@@ -15,6 +15,10 @@
 #' @param args_YonZ Optional list of additional arguments for the Y on Z regression.
 #' @param args_XonZ Optional list of additional arguments for the X on Z regression.
 #' @param B Number of permutations (default 499).
+#' @param n_cores Number of cores for parallel permutation loop (default 1,
+#'   sequential). Only used when the lrm fast path is not applicable. Requires
+#'   the \code{parallel} package. Uses \code{parallel::mclapply} (not available
+#'   on Windows).
 #' @param alternative Type of alternative hypothesis. One of \code{"two.sided"},
 #'   \code{"greater"} (default), or \code{"less"}.
 #' @param return_fitted_models Logical. If TRUE, return fitted regression models
@@ -65,6 +69,7 @@ perm_gcm <- function(Y, X, Z,
                      reg_YonZ = "rf", reg_XonZ = "rf",
                      args_YonZ = NULL, args_XonZ = NULL,
                      B = 499L,
+                     n_cores = 1L,
                      alternative = c("two.sided", "greater", "less"),
                      return_fitted_models = FALSE) {
   alternative <- match.arg(alternative)
@@ -89,14 +94,58 @@ perm_gcm <- function(Y, X, Z,
   T_obs <- studentized_stat(R_obs)
 
   ## Step 4: Permutation loop
-  T_perm <- numeric(B)
-  for (b in seq_len(B)) {
-    perm <- sample.int(n)
-    X_perm <- X[perm, , drop = FALSE]
-    mX_perm <- fit_regression(y = X_perm, x = Z, method = reg_XonZ, args = args_XonZ)
-    rX_perm <- stats::residuals(mX_perm, response = X_perm, data = Z)
-    R_perm <- c(rX_perm) * c(rY)
-    T_perm[b] <- studentized_stat(R_perm)
+  if (is_lrm_fastpath(reg_XonZ, args_XonZ)) {
+    ## --- Vectorized lrm fast path ---
+    Q <- precompute_qr_projection(Z)
+    perm_mat <- replicate(B, sample.int(n))
+
+    if (NCOL(X) == 1L) {
+      ## Univariate X: single batch matrix multiply
+      X_perm_mat <- apply_permutations(c(X), perm_mat)
+      rX_perm_mat <- fast_lrm_residuals(Q, X_perm_mat)
+      R_perm_mat <- rX_perm_mat * c(rY)
+      T_perm <- vectorized_studentized_stat(R_perm_mat)
+    } else {
+      ## Multivariate X: accumulate sums across columns
+      d <- NCOL(X)
+      nd <- as.numeric(n * d)
+      S1 <- numeric(B)
+      S2 <- numeric(B)
+      for (j in seq_len(d)) {
+        Xj_perm_mat <- apply_permutations(X[, j], perm_mat)
+        rXj_perm_mat <- fast_lrm_residuals(Q, Xj_perm_mat)
+        Rj <- rXj_perm_mat * c(rY)
+        S1 <- S1 + colSums(Rj)
+        S2 <- S2 + colSums(Rj^2)
+      }
+      mean_vals <- S1 / nd
+      var_vals <- S2 / nd - mean_vals^2
+      var_vals[var_vals <= 0] <- Inf
+      T_perm <- sqrt(nd) * mean_vals / sqrt(var_vals)
+    }
+  } else if (n_cores > 1L && requireNamespace("parallel", quietly = TRUE)) {
+    ## --- Parallel loop for non-lrm methods ---
+    T_perm <- unlist(parallel::mclapply(seq_len(B), function(b) {
+      perm <- sample.int(n)
+      X_perm <- X[perm, , drop = FALSE]
+      mX_perm <- fit_regression(y = X_perm, x = Z, method = reg_XonZ,
+                                args = args_XonZ)
+      rX_perm <- stats::residuals(mX_perm, response = X_perm, data = Z)
+      R_perm <- c(rX_perm) * c(rY)
+      studentized_stat(R_perm)
+    }, mc.cores = n_cores))
+  } else {
+    ## --- Sequential loop (original) ---
+    T_perm <- numeric(B)
+    for (b in seq_len(B)) {
+      perm <- sample.int(n)
+      X_perm <- X[perm, , drop = FALSE]
+      mX_perm <- fit_regression(y = X_perm, x = Z, method = reg_XonZ,
+                                args = args_XonZ)
+      rX_perm <- stats::residuals(mX_perm, response = X_perm, data = Z)
+      R_perm <- c(rX_perm) * c(rY)
+      T_perm[b] <- studentized_stat(R_perm)
+    }
   }
 
   ## Step 5: Permutation p-value

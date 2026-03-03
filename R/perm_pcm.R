@@ -22,6 +22,10 @@
 #' @param frac Fraction of data for D1 (test fold). Default 0.5.
 #' @param indices Optional pre-specified indices for D2 (direction estimation fold).
 #' @param B Number of permutations (default 499).
+#' @param n_cores Number of cores for parallel permutation loop (default 1,
+#'   sequential). Only used when no lrm fast path is applicable. Requires
+#'   the \code{parallel} package. Uses \code{parallel::mclapply} (not available
+#'   on Windows).
 #' @param alternative Type of alternative hypothesis. One of \code{"two.sided"},
 #'   \code{"greater"} (default), or \code{"less"}.
 #' @param return_fitted_models Logical. If TRUE, return fitted regression models.
@@ -73,6 +77,7 @@ perm_pcm <- function(Y, X, Z = NULL,
                      args_YhatonZ = NULL, args_RonZ = NULL,
                      frac = 0.5, indices = NULL,
                      B = 499L,
+                     n_cores = 1L,
                      alternative = c("two.sided", "greater", "less"),
                      return_fitted_models = FALSE) {
   alternative <- match.arg(alternative)
@@ -150,25 +155,86 @@ perm_pcm <- function(Y, X, Z = NULL,
   T_obs <- studentized_stat(L_obs)
 
   ## ---- Permutation loop ----
-  T_perm <- numeric(B)
-  for (b in seq_len(B)) {
-    ## Permute X_j within D1
-    perm <- sample.int(n)
-    Xj_perm <- Xj_D1[perm, , drop = FALSE]
+  lrm_full <- is_lrm_fastpath(reg_YonXZ, args_YonXZ) &&
+              is_lrm_fastpath(reg_YhatonZ, args_YhatonZ) &&
+              is_lrm_fastpath(reg_RonZ, args_RonZ)
+  lrm_proj <- is_lrm_fastpath(reg_RonZ, args_RonZ)
 
-    ## Form permuted full covariates on D1
-    XW_D1_perm <- cbind(Xj_perm, W_D1)
+  if (lrm_full) {
+    ## --- Full lrm fast path ---
+    ## Decompose fhat_perm = beta_j * Xj_perm + const_fhat
+    cfx_p <- stats::coef(m_hat_p)
+    cfx_p[is.na(cfx_p)] <- 0
+    beta_j <- cfx_p[2]  # coefficient for Xj (1st predictor after intercept)
 
-    ## Recompute direction on D1 using FIXED D2 models
-    fhat_perm <- compute_fhat(XW_D1_perm, W_D1)
+    ## Constant part: predict(m_hat_p, Xj=0, W) - predict(m_hat_qj, W)
+    cfx_W <- cfx_p[-(1:2)]
+    if (length(cfx_W) > 0L) {
+      pred_W_const <- c(cfx_p[1] + as.matrix(W_D1) %*% cfx_W)
+    } else {
+      pred_W_const <- rep(cfx_p[1], n)
+    }
+    qj_pred <- c(stats::predict(m_hat_qj, data = W_D1))
+    const_fhat <- pred_W_const - qj_pred
 
-    ## Refit projection: f_hat^pi ~ (X_{-j}, Z) on D1
-    m_hat_pfj_perm <- fit_regression(y = fhat_perm, x = W_D1, method = reg_RonZ, args = args_RonZ)
-    rF_perm <- c(fhat_perm) - c(stats::predict(m_hat_pfj_perm, data = W_D1))
+    ## Precompute projection matrix Q_W and fixed residual component
+    Q_W <- precompute_qr_projection(W_D1)
+    M_W_const <- c(fast_lrm_residuals(Q_W, matrix(const_fhat, ncol = 1)))
 
-    ## rY stays FIXED
-    L_perm <- rY * rF_perm
-    T_perm[b] <- studentized_stat(L_perm)
+    ## All permutations at once
+    perm_mat <- replicate(B, sample.int(n))
+    Xj_perm_mat <- apply_permutations(c(Xj_D1), perm_mat)
+
+    ## rF_perm = beta_j * M_W %*% Xj_perm + M_W_const
+    M_W_Xj_perm <- fast_lrm_residuals(Q_W, Xj_perm_mat)
+    rF_perm_mat <- beta_j * M_W_Xj_perm + M_W_const
+
+    L_perm_mat <- c(rY) * rF_perm_mat
+    T_perm <- vectorized_studentized_stat(L_perm_mat)
+
+  } else if (lrm_proj) {
+    ## --- Partial fast path: loop over compute_fhat, batch projection ---
+    Q_W <- precompute_qr_projection(W_D1)
+    perm_mat <- replicate(B, sample.int(n))
+    fhat_perm_mat <- matrix(NA_real_, n, B)
+
+    for (b in seq_len(B)) {
+      Xj_perm <- Xj_D1[perm_mat[, b], , drop = FALSE]
+      XW_D1_perm <- cbind(Xj_perm, W_D1)
+      fhat_perm_mat[, b] <- compute_fhat(XW_D1_perm, W_D1)
+    }
+
+    rF_perm_mat <- fast_lrm_residuals(Q_W, fhat_perm_mat)
+    L_perm_mat <- c(rY) * rF_perm_mat
+    T_perm <- vectorized_studentized_stat(L_perm_mat)
+
+  } else if (n_cores > 1L && requireNamespace("parallel", quietly = TRUE)) {
+    ## --- Parallel loop for non-lrm methods ---
+    T_perm <- unlist(parallel::mclapply(seq_len(B), function(b) {
+      perm <- sample.int(n)
+      Xj_perm <- Xj_D1[perm, , drop = FALSE]
+      XW_D1_perm <- cbind(Xj_perm, W_D1)
+      fhat_perm <- compute_fhat(XW_D1_perm, W_D1)
+      m_pfj_perm <- fit_regression(y = fhat_perm, x = W_D1,
+                                   method = reg_RonZ, args = args_RonZ)
+      rF_perm <- c(fhat_perm) - c(stats::predict(m_pfj_perm, data = W_D1))
+      L_perm <- rY * rF_perm
+      studentized_stat(L_perm)
+    }, mc.cores = n_cores))
+  } else {
+    ## --- Sequential loop (original) ---
+    T_perm <- numeric(B)
+    for (b in seq_len(B)) {
+      perm <- sample.int(n)
+      Xj_perm <- Xj_D1[perm, , drop = FALSE]
+      XW_D1_perm <- cbind(Xj_perm, W_D1)
+      fhat_perm <- compute_fhat(XW_D1_perm, W_D1)
+      m_hat_pfj_perm <- fit_regression(y = fhat_perm, x = W_D1,
+                                       method = reg_RonZ, args = args_RonZ)
+      rF_perm <- c(fhat_perm) - c(stats::predict(m_hat_pfj_perm, data = W_D1))
+      L_perm <- rY * rF_perm
+      T_perm[b] <- studentized_stat(L_perm)
+    }
   }
 
   ## Permutation p-value

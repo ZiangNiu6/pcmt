@@ -107,3 +107,48 @@ test_that("perm_pcm alternative options work", {
   expect_equal(res_g$alternative, "greater")
   expect_equal(res_t$alternative, "two.sided")
 })
+
+# ---- Vectorized fast-path tests ----
+
+test_that("perm_pcm full lrm fast path gives valid p-values under null", {
+  set.seed(404)
+  n <- 300
+  X <- matrix(rnorm(n * 3), ncol = 3)
+  Y <- X[, 2] + X[, 3] + rnorm(n)  # X_1 is irrelevant
+
+  result <- perm_pcm(Y, X, target = 1,
+                     reg_YonXZ = "lrm", reg_YonZ = "lrm",
+                     reg_YhatonZ = "lrm", reg_RonZ = "lrm",
+                     B = 199L, alternative = "greater")
+  expect_s3_class(result, "perm_pcm")
+  expect_true(result$p.value > 0.01)
+  expect_length(result$perm_stats, 199L)
+})
+
+test_that("perm_pcm partial fast path works (rf D2 models, lrm projection)", {
+  set.seed(505)
+  n <- 300
+  X <- matrix(rnorm(n * 3), ncol = 3)
+  Y <- X[, 2] + X[, 3] + rnorm(n)
+
+  result <- perm_pcm(Y, X, target = 1,
+                     reg_YonXZ = "rf", reg_YonZ = "lrm",
+                     reg_YhatonZ = "rf", reg_RonZ = "lrm",
+                     B = 49L, alternative = "greater")
+  expect_s3_class(result, "perm_pcm")
+  expect_true(!is.null(result$p.value))
+  expect_length(result$perm_stats, 49L)
+})
+
+test_that("perm_pcm full fast path has power when X_j contributes", {
+  set.seed(606)
+  n <- 400
+  X <- matrix(rnorm(n * 3), ncol = 3)
+  Y <- X[, 1] + X[, 2] + rnorm(n)
+
+  result <- perm_pcm(Y, X, target = 1,
+                     reg_YonXZ = "lrm", reg_YonZ = "lrm",
+                     reg_YhatonZ = "lrm", reg_RonZ = "lrm",
+                     B = 199L, alternative = "greater")
+  expect_true(result$p.value < 0.1)
+})

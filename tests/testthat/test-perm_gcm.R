@@ -96,3 +96,47 @@ test_that("perm_gcm return_fitted_models works", {
   expect_true("reg_YonZ" %in% names(result$models))
   expect_true("reg_XonZ" %in% names(result$models))
 })
+
+# ---- Vectorized fast-path tests ----
+
+test_that("perm_gcm lrm fast path gives valid p-values under null", {
+  set.seed(404)
+  n <- 150
+  Z <- matrix(rnorm(n * 2), ncol = 2)
+  X <- rnorm(n)  # independent of (Y, Z)
+  Y <- Z[, 1] + rnorm(n)
+
+  result <- perm_gcm(Y, X, Z, reg_YonZ = "lrm", reg_XonZ = "lrm",
+                     B = 199L, alternative = "greater")
+  expect_true(result$p.value > 0.01)
+  expect_length(result$perm_stats, 199L)
+})
+
+test_that("perm_gcm lrm fast path works with multivariate X", {
+  set.seed(505)
+  n <- 120
+  Z <- matrix(rnorm(n * 2), ncol = 2)
+  X <- cbind(rnorm(n), rnorm(n), rnorm(n))  # 3-column X, independent
+  Y <- Z[, 1] + rnorm(n)
+
+  result <- perm_gcm(Y, X, Z, reg_YonZ = "lrm", reg_XonZ = "lrm",
+                     B = 99L, alternative = "two.sided")
+  expect_s3_class(result, "perm_gcm")
+  expect_true(result$p.value > 0.01)
+  expect_length(result$perm_stats, 99L)
+})
+
+test_that("perm_gcm args_XonZ forces loop fallback", {
+  set.seed(606)
+  n <- 80
+  Z <- matrix(rnorm(n), ncol = 1)
+  X <- Z + rnorm(n)
+  Y <- Z + rnorm(n)
+
+  # Passing non-empty args should bypass the fast path
+  result <- perm_gcm(Y, X, Z, reg_YonZ = "lrm", reg_XonZ = "lrm",
+                     args_XonZ = list(weights = rep(1, n)),
+                     B = 19L)
+  expect_s3_class(result, "perm_gcm")
+  expect_true(!is.null(result$p.value))
+})

@@ -16,6 +16,7 @@ perm_wgcm(
   args_wfun = NULL,
   frac = 0.5,
   B = 499L,
+  n_cores = 1L,
   alternative = c("two.sided", "greater", "less"),
   return_fitted_models = FALSE
 )
@@ -40,6 +41,11 @@ for each regression.}
 \item{frac}{Fraction of data for weight estimation fold D1 (default 0.5).}
 
 \item{B}{Number of permutations (default 499).}
+
+\item{n_cores}{Number of cores for parallel permutation loop (default 1,
+sequential). Only used when the lrm fast path is not applicable. Requires
+the \code{parallel} package. Uses \code{parallel::mclapply} (not available
+on Windows).}
 
 \item{alternative}{Type of alternative hypothesis. One of \code{"two.sided"},
 \code{"greater"} (default), or \code{"less"}.}

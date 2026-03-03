@@ -104,3 +104,73 @@ split_sample <- function(Y, X, Z, frac = 0.5, indices = NULL) {
     idx = idx
   )
 }
+
+# ---- Vectorized helpers for lrm fast path ----
+
+#' Check whether the lrm fast path applies
+#'
+#' Returns TRUE when the regression method is \code{"lrm"} and no extra
+#' arguments are supplied, so that residuals can be obtained via a single
+#' QR-based matrix projection instead of repeated \code{lm()} calls.
+#'
+#' @param method Regression method string.
+#' @param args Optional argument list passed to the regression.
+#' @return Logical scalar.
+#' @keywords internal
+is_lrm_fastpath <- function(method, args) {
+  identical(method, "lrm") && (is.null(args) || length(args) == 0L)
+}
+
+#' Precompute Q matrix from QR decomposition of design matrix
+#'
+#' Computes the (thin) Q factor of the QR decomposition of \code{cbind(1, Z)},
+#' truncated to the numerical rank.  Done once, cost O(np^2).
+#'
+#' @param Z Predictor matrix (n x p).
+#' @return Q matrix (n x rank), suitable for \code{\link{fast_lrm_residuals}}.
+#' @keywords internal
+precompute_qr_projection <- function(Z) {
+  design <- cbind(1, as.matrix(Z))
+  qr_obj <- qr(design)
+  qr.Q(qr_obj)[, seq_len(qr_obj$rank), drop = FALSE]
+}
+
+#' Compute lrm residuals for multiple response columns via matrix ops
+#'
+#' Given the Q factor from the design matrix, computes
+#' \code{Y_mat - Q \%*\% crossprod(Q, Y_mat)} for an n x K response matrix.
+#' Cost is O(npK) instead of K separate O(np^2) QR calls.
+#'
+#' @param Q Q matrix from \code{\link{precompute_qr_projection}}.
+#' @param Y_mat Response matrix (n x K).
+#' @return Residual matrix (n x K).
+#' @keywords internal
+fast_lrm_residuals <- function(Q, Y_mat) {
+  Y_mat - Q %*% crossprod(Q, Y_mat)
+}
+
+#' Build n x B permuted response matrix via vectorized indexing
+#'
+#' @param x_vec Numeric vector of length n.
+#' @param perm_mat Integer matrix (n x B) of permutation indices.
+#' @return Numeric matrix (n x B).
+#' @keywords internal
+apply_permutations <- function(x_vec, perm_mat) {
+  matrix(x_vec[perm_mat], nrow = nrow(perm_mat), ncol = ncol(perm_mat))
+}
+
+#' Vectorized studentized statistic across columns
+#'
+#' Computes \code{sqrt(n) * colMeans(R) / sqrt(colMeans(R^2) - colMeans(R)^2)}
+#' for each column of R_mat.
+#'
+#' @param R_mat Numeric matrix (n x B) of residual products.
+#' @return Numeric vector of length B.
+#' @keywords internal
+vectorized_studentized_stat <- function(R_mat) {
+  n <- nrow(R_mat)
+  cm <- colMeans(R_mat)
+  v <- colMeans(R_mat^2) - cm^2
+  v[v <= 0] <- Inf
+  sqrt(n) * cm / sqrt(v)
+}

@@ -17,6 +17,10 @@
 #'   for each regression.
 #' @param frac Fraction of data for weight estimation fold D1 (default 0.5).
 #' @param B Number of permutations (default 499).
+#' @param n_cores Number of cores for parallel permutation loop (default 1,
+#'   sequential). Only used when the lrm fast path is not applicable. Requires
+#'   the \code{parallel} package. Uses \code{parallel::mclapply} (not available
+#'   on Windows).
 #' @param alternative Type of alternative hypothesis. One of \code{"two.sided"},
 #'   \code{"greater"} (default), or \code{"less"}.
 #' @param return_fitted_models Logical. If TRUE, return fitted regression models.
@@ -75,6 +79,7 @@ perm_wgcm <- function(Y, X, Z,
                       args_wfun = NULL,
                       frac = 0.5,
                       B = 499L,
+                      n_cores = 1L,
                       alternative = c("two.sided", "greater", "less"),
                       return_fitted_models = FALSE) {
   alternative <- match.arg(alternative)
@@ -138,25 +143,69 @@ perm_wgcm <- function(Y, X, Z,
   }
 
   ## ---- Permutation loop on D2 ----
-  T_perm <- numeric(B)
-  for (b in seq_len(B)) {
-    perm <- sample.int(n)
-    X_perm <- X_D2[perm, , drop = FALSE]
+  if (is_lrm_fastpath(reg_XonZ, args_XonZ)) {
+    ## --- Vectorized lrm fast path ---
+    Q_D2 <- precompute_qr_projection(Z_D2)
+    perm_mat <- replicate(B, sample.int(n))
+    d <- NCOL(X_D2)
 
-    ## Refit X_pi on Z -> rX_pi
-    rX_perm <- apply(X_perm, 2, function(tX) {
-      m <- fit_regression(y = tX, x = Z_D2, method = reg_XonZ, args = args_XonZ)
-      stats::residuals(m, response = tX, data = Z_D2)
-    })
-    rX_perm <- as.matrix(rX_perm)
-
-    ## Apply FIXED weights
-    rX_w_perm <- rX_perm * W
-    R_perm <- c(rY) * rX_w_perm
-    if (NCOL(R_perm) == 1) {
-      T_perm[b] <- studentized_stat(c(R_perm))
+    if (d == 1L) {
+      ## Univariate X
+      X_perm_mat <- apply_permutations(c(X_D2), perm_mat)
+      rX_perm_mat <- fast_lrm_residuals(Q_D2, X_perm_mat)
+      rX_w_perm_mat <- rX_perm_mat * c(W)
+      R_perm_mat <- c(rY) * rX_w_perm_mat
+      T_perm <- vectorized_studentized_stat(R_perm_mat)
     } else {
-      T_perm[b] <- max(apply(R_perm, 2, studentized_stat))
+      ## Multivariate X: max-type statistic across columns
+      Tj_mat <- matrix(NA_real_, d, B)
+      for (j in seq_len(d)) {
+        Xj_perm_mat <- apply_permutations(X_D2[, j], perm_mat)
+        rXj_perm_mat <- fast_lrm_residuals(Q_D2, Xj_perm_mat)
+        rXj_w_perm_mat <- rXj_perm_mat * W[, j]
+        Rj_perm_mat <- c(rY) * rXj_w_perm_mat
+        Tj_mat[j, ] <- vectorized_studentized_stat(Rj_perm_mat)
+      }
+      T_perm <- apply(Tj_mat, 2, max)
+    }
+  } else if (n_cores > 1L && requireNamespace("parallel", quietly = TRUE)) {
+    ## --- Parallel loop for non-lrm methods ---
+    T_perm <- unlist(parallel::mclapply(seq_len(B), function(b) {
+      perm <- sample.int(n)
+      X_perm <- X_D2[perm, , drop = FALSE]
+      rX_perm <- apply(X_perm, 2, function(tX) {
+        m <- fit_regression(y = tX, x = Z_D2, method = reg_XonZ,
+                            args = args_XonZ)
+        stats::residuals(m, response = tX, data = Z_D2)
+      })
+      rX_perm <- as.matrix(rX_perm)
+      rX_w_perm <- rX_perm * W
+      R_perm <- c(rY) * rX_w_perm
+      if (NCOL(R_perm) == 1) {
+        studentized_stat(c(R_perm))
+      } else {
+        max(apply(R_perm, 2, studentized_stat))
+      }
+    }, mc.cores = n_cores))
+  } else {
+    ## --- Sequential loop (original) ---
+    T_perm <- numeric(B)
+    for (b in seq_len(B)) {
+      perm <- sample.int(n)
+      X_perm <- X_D2[perm, , drop = FALSE]
+      rX_perm <- apply(X_perm, 2, function(tX) {
+        m <- fit_regression(y = tX, x = Z_D2, method = reg_XonZ,
+                            args = args_XonZ)
+        stats::residuals(m, response = tX, data = Z_D2)
+      })
+      rX_perm <- as.matrix(rX_perm)
+      rX_w_perm <- rX_perm * W
+      R_perm <- c(rY) * rX_w_perm
+      if (NCOL(R_perm) == 1) {
+        T_perm[b] <- studentized_stat(c(R_perm))
+      } else {
+        T_perm[b] <- max(apply(R_perm, 2, studentized_stat))
+      }
     }
   }
 

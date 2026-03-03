@@ -78,3 +78,33 @@ test_that("perm_wgcm alternative options work", {
   expect_equal(res_g$alternative, "greater")
   expect_equal(res_t$alternative, "two.sided")
 })
+
+# ---- Vectorized fast-path tests ----
+
+test_that("perm_wgcm lrm fast path gives valid p-values under null", {
+  set.seed(303)
+  n <- 150
+  Z <- matrix(rnorm(n * 2), ncol = 2)
+  X <- rnorm(n)  # independent of (Y, Z)
+  Y <- Z[, 1] + rnorm(n)
+
+  result <- perm_wgcm(Y, X, Z, reg_YonZ = "lrm", reg_XonZ = "lrm",
+                      reg_wfun = "lrm", B = 199L, alternative = "greater")
+  expect_s3_class(result, "perm_wgcm")
+  expect_true(result$p.value > 0.01)
+  expect_length(result$perm_stats, 199L)
+})
+
+test_that("perm_wgcm lrm fast path works with multivariate X", {
+  set.seed(404)
+  n <- 150
+  Z <- matrix(rnorm(n), ncol = 1)
+  X <- cbind(rnorm(n), rnorm(n))  # 2-column X, independent
+  Y <- Z + rnorm(n)
+
+  result <- perm_wgcm(Y, X, Z, reg_YonZ = "lrm", reg_XonZ = "lrm",
+                      reg_wfun = "lrm", B = 49L, alternative = "two.sided")
+  expect_s3_class(result, "perm_wgcm")
+  expect_true(!is.null(result$p.value))
+  expect_length(result$perm_stats, 49L)
+})

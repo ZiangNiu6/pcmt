@@ -20,6 +20,7 @@ perm_pcm(
   frac = 0.5,
   indices = NULL,
   B = 499L,
+  n_cores = 1L,
   alternative = c("two.sided", "greater", "less"),
   return_fitted_models = FALSE
 )
@@ -52,6 +53,11 @@ additional arguments for each regression.}
 \item{indices}{Optional pre-specified indices for D2 (direction estimation fold).}
 
 \item{B}{Number of permutations (default 499).}
+
+\item{n_cores}{Number of cores for parallel permutation loop (default 1,
+sequential). Only used when no lrm fast path is applicable. Requires
+the \code{parallel} package. Uses \code{parallel::mclapply} (not available
+on Windows).}
 
 \item{alternative}{Type of alternative hypothesis. One of \code{"two.sided"},
 \code{"greater"} (default), or \code{"less"}.}
