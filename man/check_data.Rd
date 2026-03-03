@@ -2,7 +2,7 @@
 % Please edit documentation in R/utils.R
 \name{check_data}
 \alias{check_data}
-\title{Check and standardize data using comets infrastructure}
+\title{Check and standardize data}
 \usage{
 check_data(x, mode = "Y", test = "gcm")
 }
@@ -17,6 +17,8 @@ check_data(x, mode = "Y", test = "gcm")
 Standardized data.
 }
 \description{
-Check and standardize data using comets infrastructure
+Validates and coerces input data to the expected format.
+Y is returned as a vector (for PCM, must be univariate).
+X and Z are returned as matrices with column names.
 }
 \keyword{internal}

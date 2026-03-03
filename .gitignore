@@ -1,0 +1,6 @@
+/doc/
+/Meta/
+/inst/doc/
+vignettes/*_cache/
+vignettes/*_files/
+*.Rproj.user

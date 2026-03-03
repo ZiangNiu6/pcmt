@@ -3,3 +3,4 @@
 export(perm_gcm)
 export(perm_pcm)
 export(perm_wgcm)
+importFrom(comets,gcm)
