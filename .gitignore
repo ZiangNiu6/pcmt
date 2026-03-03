@@ -3,4 +3,5 @@
 /inst/doc/
 vignettes/*_cache/
 vignettes/*_files/
+vignettes/*.html
 *.Rproj.user
