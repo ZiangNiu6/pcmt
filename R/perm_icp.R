@@ -84,9 +84,10 @@ perm_icp <- function(formula, data, env, modFUN,
   pred_names <- attr(stats::terms(formula, data = data), "term.labels")
   d <- length(pred_names)
 
-  ## Parse environment variables
+  ## Parse environment variables — expand factors to dummy columns
   env_names <- all.vars(env)
-  E_mat <- as.matrix(data[, env_names, drop = FALSE])
+  E_raw <- data[, env_names, drop = FALSE]
+  E_mat <- .expand_to_numeric(E_raw)
 
   ## Parse mandatory predictors
   mandatory_names <- character(0)
@@ -172,7 +173,7 @@ perm_icp <- function(formula, data, env, modFUN,
     if (length(S) == 0L) {
       xi <- scale(E_mat, scale = FALSE)
     } else {
-      X_S <- as.matrix(data[, S, drop = FALSE])
+      X_S <- .expand_to_numeric(data[, S, drop = FALSE])
       xi <- residualize_environment(E_mat, X_S, method = reg_env)
     }
 

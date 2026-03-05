@@ -174,3 +174,24 @@ vectorized_studentized_stat <- function(R_mat) {
   v[v <= 0] <- Inf
   sqrt(n) * cm / sqrt(v)
 }
+
+#' Expand a data frame to a numeric matrix
+#'
+#' Converts factor/character columns to dummy variables via
+#' \code{model.matrix} and leaves numeric columns as-is.
+#' Used internally by \code{perm_icp} to handle mixed-type
+#' covariates and environments.
+#'
+#' @param df A data frame.
+#' @return A numeric matrix with no intercept column.
+#' @keywords internal
+.expand_to_numeric <- function(df) {
+  df <- as.data.frame(df)
+  if (ncol(df) == 0L) return(matrix(nrow = nrow(df), ncol = 0L))
+  has_factor <- any(vapply(df, function(x) is.factor(x) || is.character(x),
+                           logical(1)))
+  if (!has_factor) return(as.matrix(df))
+  # Use model.matrix to expand factors to dummies (no intercept)
+  mm <- stats::model.matrix(~ . - 1, data = df)
+  unname(mm)
+}
