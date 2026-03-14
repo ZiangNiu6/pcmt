@@ -16,13 +16,11 @@ Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 Imports:
     comets,
-    stats,
-    utils
+    stats
 Suggests:
+    mgcv,
     parallel,
     ranger,
-    survival,
-    tramicp,
     testthat (>= 3.0.0),
     ggplot2,
     knitr,

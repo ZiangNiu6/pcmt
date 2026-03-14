@@ -2,5 +2,5 @@
 "_PACKAGE"
 
 #' @importFrom comets gcm
-#' @importFrom stats gaussian residuals weights fitted model.matrix
+#' @importFrom stats gaussian residuals weights fitted model.matrix predict
 NULL

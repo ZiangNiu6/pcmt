@@ -36,16 +36,75 @@ perm_pvalue <- function(T_obs, T_perm, alternative = "greater") {
 #'
 #' Thin wrapper around comets regression functions. Fits a model of y on x
 #' using the specified method string (e.g., "rf", "lrm", "lasso").
+#' Also supports \code{"gam"} for a generalized additive model with negative
+#' binomial family via \code{mgcv::gam}, which is handled internally rather
+#' than through comets.
 #'
 #' @param y Response vector or matrix.
 #' @param x Predictor matrix.
 #' @param method Character string specifying the regression method.
+#'   Use \code{"gam"} for \code{mgcv::gam} with \code{nb()} family.
 #' @param args Optional list of additional arguments passed to the fitting function.
-#' @return Fitted model object (comets S3 class).
+#'   For \code{"gam"}, supported arguments include \code{family} (default
+#'   \code{mgcv::nb()}) and \code{k} (basis dimension for smooth terms,
+#'   default -1 = automatic).
+#' @return Fitted model object (comets S3 class, or \code{"gam_fit"} for GAM).
 #' @keywords internal
 fit_regression <- function(y, x, method = "rf", args = NULL) {
+  if (identical(method, "gam")) {
+    return(do.call(fit_gam, c(list(y = y, x = x), args)))
+  }
   fn <- get(method, envir = asNamespace("comets"))
   do.call(fn, c(list(y = y, x = x), args))
+}
+
+#' Fit a GAM with negative binomial family
+#'
+#' Fits a generalized additive model using \code{mgcv::gam} with smooth terms
+#' for each predictor. Intended for count responses where a flexible
+#' mean function is desired (e.g., Y | Z regression in the GCM test).
+#'
+#' @param y Response vector (non-negative integers for NB family).
+#' @param x Predictor matrix. Each column gets a smooth term \code{s()}.
+#' @param family GAM family (default \code{mgcv::nb()} for negative binomial
+#'   with estimated theta).
+#' @param k Basis dimension for smooth terms (default -1, automatic).
+#' @return An object of class \code{"gam_fit"} containing the fitted
+#'   \code{mgcv::gam} model and training data.
+#' @keywords internal
+fit_gam <- function(y, x, family = NULL, k = -1) {
+  if (!requireNamespace("mgcv", quietly = TRUE)) {
+    stop("Package 'mgcv' is required for method = \"gam\". ",
+         "Install it with install.packages(\"mgcv\").")
+  }
+  if (is.null(family)) family <- mgcv::nb()
+  x <- as.matrix(x)
+  p <- ncol(x)
+  col_nms <- if (!is.null(colnames(x))) colnames(x) else paste0("V", seq_len(p))
+  colnames(x) <- col_nms
+  dat <- as.data.frame(x)
+  dat$.y <- c(y)
+  smooth_terms <- paste0("s(", col_nms, ", k=", k, ")", collapse = " + ")
+  fml <- stats::as.formula(paste(".y ~", smooth_terms))
+  gam_model <- mgcv::gam(fml, data = dat, family = family)
+  structure(
+    list(model = gam_model, train_x = x, fitted = fitted(gam_model)),
+    class = "gam_fit"
+  )
+}
+
+#' @export
+residuals.gam_fit <- function(object, response = NULL, data = NULL, ...) {
+  if (!is.null(data)) {
+    data <- as.matrix(data)
+    if (!is.null(colnames(object$train_x))) {
+      colnames(data) <- colnames(object$train_x)
+    }
+    newdat <- as.data.frame(data)
+    pred <- predict(object$model, newdata = newdat, type = "response")
+    return(c(response) - c(pred))
+  }
+  c(response) - object$fitted
 }
 
 #' Check and standardize data
@@ -173,25 +232,4 @@ vectorized_studentized_stat <- function(R_mat) {
   v <- colMeans(R_mat^2) - cm^2
   v[v <= 0] <- Inf
   sqrt(n) * cm / sqrt(v)
-}
-
-#' Expand a data frame to a numeric matrix
-#'
-#' Converts factor/character columns to dummy variables via
-#' \code{model.matrix} and leaves numeric columns as-is.
-#' Used internally by \code{perm_icp} to handle mixed-type
-#' covariates and environments.
-#'
-#' @param df A data frame.
-#' @return A numeric matrix with no intercept column.
-#' @keywords internal
-.expand_to_numeric <- function(df) {
-  df <- as.data.frame(df)
-  if (ncol(df) == 0L) return(matrix(nrow = nrow(df), ncol = 0L))
-  has_factor <- any(vapply(df, function(x) is.factor(x) || is.character(x),
-                           logical(1)))
-  if (!has_factor) return(as.matrix(df))
-  # Use model.matrix to expand factors to dummies (no intercept)
-  mm <- stats::model.matrix(~ . - 1, data = df)
-  unname(mm)
 }

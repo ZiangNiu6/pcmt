@@ -11,15 +11,22 @@ fit_regression(y, x, method = "rf", args = NULL)
 
 \item{x}{Predictor matrix.}
 
-\item{method}{Character string specifying the regression method.}
+\item{method}{Character string specifying the regression method.
+Use \code{"gam"} for \code{mgcv::gam} with \code{nb()} family.}
 
-\item{args}{Optional list of additional arguments passed to the fitting function.}
+\item{args}{Optional list of additional arguments passed to the fitting function.
+For \code{"gam"}, supported arguments include \code{family} (default
+\code{mgcv::nb()}) and \code{k} (basis dimension for smooth terms,
+default -1 = automatic).}
 }
 \value{
-Fitted model object (comets S3 class).
+Fitted model object (comets S3 class, or \code{"gam_fit"} for GAM).
 }
 \description{
 Thin wrapper around comets regression functions. Fits a model of y on x
 using the specified method string (e.g., "rf", "lrm", "lasso").
+Also supports \code{"gam"} for a generalized additive model with negative
+binomial family via \code{mgcv::gam}, which is handled internally rather
+than through comets.
 }
 \keyword{internal}
