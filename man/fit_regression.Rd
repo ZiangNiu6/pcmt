@@ -16,8 +16,9 @@ Use \code{"gam"} for \code{mgcv::gam} with \code{nb()} family.}
 
 \item{args}{Optional list of additional arguments passed to the fitting function.
 For \code{"gam"}, supported arguments include \code{family} (default
-\code{mgcv::nb()}) and \code{k} (basis dimension for smooth terms,
-default -1 = automatic).}
+\code{mgcv::nb()}), \code{k} (basis dimension, default -1), and
+\code{formula} (custom GAM formula, e.g.
+\code{~ s(Z1) + s(Z2) + ti(Z1, Z2)}).}
 }
 \value{
 Fitted model object (comets S3 class, or \code{"gam_fit"} for GAM).

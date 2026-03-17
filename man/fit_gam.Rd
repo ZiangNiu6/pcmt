@@ -4,17 +4,25 @@
 \alias{fit_gam}
 \title{Fit a GAM with negative binomial family}
 \usage{
-fit_gam(y, x, family = NULL, k = -1)
+fit_gam(y, x, family = NULL, k = -1, formula = NULL)
 }
 \arguments{
 \item{y}{Response vector (non-negative integers for NB family).}
 
-\item{x}{Predictor matrix. Each column gets a smooth term \code{s()}.}
+\item{x}{Predictor matrix. Each column gets a smooth term \code{s()}
+unless \code{formula} is provided.}
 
 \item{family}{GAM family (default \code{mgcv::nb()} for negative binomial
 with estimated theta).}
 
-\item{k}{Basis dimension for smooth terms (default -1, automatic).}
+\item{k}{Basis dimension for smooth terms (default -1, automatic).
+Ignored when \code{formula} is supplied.}
+
+\item{formula}{Optional one-sided or two-sided formula for the GAM
+right-hand side.  Use column names of \code{x} (or \code{V1, V2, ...})
+as predictors and \code{.y} as the response.
+Examples: \code{~ s(Z1) + s(Z2) + ti(Z1, Z2)},
+\code{.y ~ s(Z1) + s(Z2) + ti(Z1, Z2)}.}
 }
 \value{
 An object of class \code{"gam_fit"} containing the fitted
@@ -24,5 +32,12 @@ An object of class \code{"gam_fit"} containing the fitted
 Fits a generalized additive model using \code{mgcv::gam} with smooth terms
 for each predictor. Intended for count responses where a flexible
 mean function is desired (e.g., Y | Z regression in the GCM test).
+}
+\details{
+By default every column of \code{x} gets its own \code{s()} smooth term.
+Supply a custom \code{formula} to override this, e.g. to add tensor
+interaction smooths.  The formula should use \code{.y} as the response
+and the column names of \code{x} as predictors.  If \code{x} has no
+column names, they are set to \code{V1, V2, ...}.
 }
 \keyword{internal}

@@ -46,8 +46,9 @@ perm_pvalue <- function(T_obs, T_perm, alternative = "greater") {
 #'   Use \code{"gam"} for \code{mgcv::gam} with \code{nb()} family.
 #' @param args Optional list of additional arguments passed to the fitting function.
 #'   For \code{"gam"}, supported arguments include \code{family} (default
-#'   \code{mgcv::nb()}) and \code{k} (basis dimension for smooth terms,
-#'   default -1 = automatic).
+#'   \code{mgcv::nb()}), \code{k} (basis dimension, default -1), and
+#'   \code{formula} (custom GAM formula, e.g.
+#'   \code{~ s(Z1) + s(Z2) + ti(Z1, Z2)}).
 #' @return Fitted model object (comets S3 class, or \code{"gam_fit"} for GAM).
 #' @keywords internal
 fit_regression <- function(y, x, method = "rf", args = NULL) {
@@ -64,15 +65,28 @@ fit_regression <- function(y, x, method = "rf", args = NULL) {
 #' for each predictor. Intended for count responses where a flexible
 #' mean function is desired (e.g., Y | Z regression in the GCM test).
 #'
+#' By default every column of \code{x} gets its own \code{s()} smooth term.
+#' Supply a custom \code{formula} to override this, e.g. to add tensor
+#' interaction smooths.  The formula should use \code{.y} as the response
+#' and the column names of \code{x} as predictors.  If \code{x} has no
+#' column names, they are set to \code{V1, V2, ...}.
+#'
 #' @param y Response vector (non-negative integers for NB family).
-#' @param x Predictor matrix. Each column gets a smooth term \code{s()}.
+#' @param x Predictor matrix. Each column gets a smooth term \code{s()}
+#'   unless \code{formula} is provided.
 #' @param family GAM family (default \code{mgcv::nb()} for negative binomial
 #'   with estimated theta).
 #' @param k Basis dimension for smooth terms (default -1, automatic).
+#'   Ignored when \code{formula} is supplied.
+#' @param formula Optional one-sided or two-sided formula for the GAM
+#'   right-hand side.  Use column names of \code{x} (or \code{V1, V2, ...})
+#'   as predictors and \code{.y} as the response.
+#'   Examples: \code{~ s(Z1) + s(Z2) + ti(Z1, Z2)},
+#'   \code{.y ~ s(Z1) + s(Z2) + ti(Z1, Z2)}.
 #' @return An object of class \code{"gam_fit"} containing the fitted
 #'   \code{mgcv::gam} model and training data.
 #' @keywords internal
-fit_gam <- function(y, x, family = NULL, k = -1) {
+fit_gam <- function(y, x, family = NULL, k = -1, formula = NULL) {
   if (!requireNamespace("mgcv", quietly = TRUE)) {
     stop("Package 'mgcv' is required for method = \"gam\". ",
          "Install it with install.packages(\"mgcv\").")
@@ -84,8 +98,18 @@ fit_gam <- function(y, x, family = NULL, k = -1) {
   colnames(x) <- col_nms
   dat <- as.data.frame(x)
   dat$.y <- c(y)
-  smooth_terms <- paste0("s(", col_nms, ", k=", k, ")", collapse = " + ")
-  fml <- stats::as.formula(paste(".y ~", smooth_terms))
+  if (!is.null(formula)) {
+    ## Accept one-sided (~ rhs) or two-sided (.y ~ rhs) formulas
+    if (length(formula) == 2L) {
+      ## one-sided: ~ rhs  ->  .y ~ rhs
+      fml <- stats::as.formula(paste(".y ~", deparse(formula[[2]])))
+    } else {
+      fml <- formula
+    }
+  } else {
+    smooth_terms <- paste0("s(", col_nms, ", k=", k, ")", collapse = " + ")
+    fml <- stats::as.formula(paste(".y ~", smooth_terms))
+  }
   gam_model <- mgcv::gam(fml, data = dat, family = family)
   structure(
     list(model = gam_model, train_x = x, fitted = fitted(gam_model)),
