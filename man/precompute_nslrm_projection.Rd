@@ -14,6 +14,7 @@ Q matrix suitable for \code{\link{fast_lrm_residuals}}.
 }
 \description{
 Extracts the stored natural spline bases, reconstructs the expanded design
-matrix, and calls \code{\link{precompute_qr_projection}} on it.
+matrix (including interaction terms if applicable), and calls
+\code{\link{precompute_qr_projection}} on it.
 }
 \keyword{internal}

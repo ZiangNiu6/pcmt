@@ -4,15 +4,17 @@
 \alias{expand_ns_basis}
 \title{Expand new data using stored natural spline bases}
 \usage{
-expand_ns_basis(x, bases)
+expand_ns_basis(x, bases, interactions = FALSE)
 }
 \arguments{
 \item{x}{New predictor matrix (n x p).}
 
 \item{bases}{List of \code{ns} basis objects from \code{\link{fit_nslrm}}.}
+
+\item{interactions}{Logical. If TRUE, append pairwise tensor products.}
 }
 \value{
-Expanded matrix (n x sum(df)).
+Expanded matrix.
 }
 \description{
 Expand new data using stored natural spline bases

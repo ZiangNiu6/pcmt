@@ -201,14 +201,22 @@ split_sample <- function(Y, X, Z, frac = 0.5, indices = NULL) {
 #' fast path (\code{\link{precompute_qr_projection}} /
 #' \code{\link{fast_lrm_residuals}}) applies directly.
 #'
+#' When \code{interactions = TRUE} and there are at least two predictors,
+#' all pairwise tensor products of the marginal spline bases are appended
+#' to the design matrix, adding \code{df^2} columns per pair.  This allows
+#' the model to capture interaction effects (e.g. Z1 * Z2) without
+#' adaptive smoothing parameter estimation.
+#'
 #' @param y Response vector or matrix.
 #' @param x Predictor matrix.  Each column is expanded independently.
 #' @param df Degrees of freedom for each natural spline basis (default 4).
+#' @param interactions Logical. If TRUE, include pairwise tensor product
+#'   interaction terms between all predictor spline bases (default FALSE).
 #' @return An object of class \code{"nslrm_fit"} containing the fitted
 #'   \code{lm} model, the list of \code{ns} basis objects (for prediction on
 #'   new data), and the original column names.
 #' @keywords internal
-fit_nslrm <- function(y, x, df = 4) {
+fit_nslrm <- function(y, x, df = 4, interactions = FALSE) {
   x <- as.matrix(x)
   p <- ncol(x)
   col_nms <- if (!is.null(colnames(x))) colnames(x) else paste0("V", seq_len(p))
@@ -223,37 +231,83 @@ fit_nslrm <- function(y, x, df = 4) {
   names(bases) <- col_nms
 
   X_expanded <- do.call(cbind, basis_mats)
+
+  ## Pairwise tensor product interactions
+  if (interactions && p >= 2L) {
+    ia_mats <- vector("list", p * (p - 1L) / 2L)
+    k <- 1L
+    for (i in seq_len(p - 1L)) {
+      for (j in (i + 1L):p) {
+        ia_mats[[k]] <- tensor_basis(basis_mats[[i]], basis_mats[[j]])
+        k <- k + 1L
+      }
+    }
+    X_expanded <- cbind(X_expanded, do.call(cbind, ia_mats))
+  }
+
   design <- cbind(1, X_expanded)
   y_mat <- if (is.matrix(y)) y else as.matrix(y)
   fit <- stats::lm.fit(design, y_mat)
 
   structure(
     list(model = fit, bases = bases, col_names = col_nms,
-         fitted = fit$fitted.values),
+         interactions = interactions, fitted = fit$fitted.values),
     class = "nslrm_fit"
   )
+}
+
+#' Compute row-wise tensor product of two basis matrices
+#'
+#' Given two matrices A (n x a) and B (n x b), returns an n x (a*b) matrix
+#' where each row is the Kronecker product of the corresponding rows of A and B.
+#'
+#' @param A Basis matrix (n x a).
+#' @param B Basis matrix (n x b).
+#' @return Matrix (n x a*b).
+#' @keywords internal
+tensor_basis <- function(A, B) {
+  n <- nrow(A)
+  a <- ncol(A)
+  b <- ncol(B)
+  ## A[,i] * B[,j] for all (i,j) pairs
+  A[, rep(seq_len(a), each = b)] * B[, rep(seq_len(b), times = a)]
 }
 
 #' Expand new data using stored natural spline bases
 #'
 #' @param x New predictor matrix (n x p).
 #' @param bases List of \code{ns} basis objects from \code{\link{fit_nslrm}}.
-#' @return Expanded matrix (n x sum(df)).
+#' @param interactions Logical. If TRUE, append pairwise tensor products.
+#' @return Expanded matrix.
 #' @keywords internal
-expand_ns_basis <- function(x, bases) {
+expand_ns_basis <- function(x, bases, interactions = FALSE) {
   x <- as.matrix(x)
   p <- length(bases)
   mats <- vector("list", p)
   for (j in seq_len(p)) {
     mats[[j]] <- predict(bases[[j]], x[, j])
   }
-  do.call(cbind, mats)
+  out <- do.call(cbind, mats)
+
+  if (interactions && p >= 2L) {
+    ia_mats <- vector("list", p * (p - 1L) / 2L)
+    k <- 1L
+    for (i in seq_len(p - 1L)) {
+      for (j in (i + 1L):p) {
+        ia_mats[[k]] <- tensor_basis(mats[[i]], mats[[j]])
+        k <- k + 1L
+      }
+    }
+    out <- cbind(out, do.call(cbind, ia_mats))
+  }
+  out
 }
 
 #' @export
 predict.nslrm_fit <- function(object, data = NULL, ...) {
   if (is.null(data)) return(object$fitted)
-  X_expanded <- expand_ns_basis(data, object$bases)
+  ia <- isTRUE(object$interactions)
+  X_expanded <- expand_ns_basis(data, object$bases, interactions = ia)
   cfx <- object$model$coefficients
   cfx[is.na(cfx)] <- 0
   c(cbind(1, X_expanded) %*% cfx)
@@ -282,13 +336,29 @@ is_nslrm_fastpath <- function(method, args) {
 #' Precompute QR projection from an nslrm fit
 #'
 #' Extracts the stored natural spline bases, reconstructs the expanded design
-#' matrix, and calls \code{\link{precompute_qr_projection}} on it.
+#' matrix (including interaction terms if applicable), and calls
+#' \code{\link{precompute_qr_projection}} on it.
 #'
 #' @param nslrm_fit An \code{"nslrm_fit"} object from \code{\link{fit_nslrm}}.
 #' @return Q matrix suitable for \code{\link{fast_lrm_residuals}}.
 #' @keywords internal
 precompute_nslrm_projection <- function(nslrm_fit) {
-  X_expanded <- do.call(cbind, lapply(nslrm_fit$bases, as.matrix))
+  basis_mats <- lapply(nslrm_fit$bases, as.matrix)
+  X_expanded <- do.call(cbind, basis_mats)
+  if (isTRUE(nslrm_fit$interactions)) {
+    p <- length(basis_mats)
+    if (p >= 2L) {
+      ia_mats <- vector("list", p * (p - 1L) / 2L)
+      k <- 1L
+      for (i in seq_len(p - 1L)) {
+        for (j in (i + 1L):p) {
+          ia_mats[[k]] <- tensor_basis(basis_mats[[i]], basis_mats[[j]])
+          k <- k + 1L
+        }
+      }
+      X_expanded <- cbind(X_expanded, do.call(cbind, ia_mats))
+    }
+  }
   precompute_qr_projection(X_expanded)
 }
 

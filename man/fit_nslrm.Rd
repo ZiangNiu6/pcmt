@@ -4,7 +4,7 @@
 \alias{fit_nslrm}
 \title{Fit a natural-spline expanded OLS model}
 \usage{
-fit_nslrm(y, x, df = 4)
+fit_nslrm(y, x, df = 4, interactions = FALSE)
 }
 \arguments{
 \item{y}{Response vector or matrix.}
@@ -12,6 +12,9 @@ fit_nslrm(y, x, df = 4)
 \item{x}{Predictor matrix.  Each column is expanded independently.}
 
 \item{df}{Degrees of freedom for each natural spline basis (default 4).}
+
+\item{interactions}{Logical. If TRUE, include pairwise tensor product
+interaction terms between all predictor spline bases (default FALSE).}
 }
 \value{
 An object of class \code{"nslrm_fit"} containing the fitted
@@ -24,5 +27,12 @@ Expands each predictor column into a natural spline basis via
 Because the model is linear in the expanded basis, the existing QR-based
 fast path (\code{\link{precompute_qr_projection}} /
 \code{\link{fast_lrm_residuals}}) applies directly.
+}
+\details{
+When \code{interactions = TRUE} and there are at least two predictors,
+all pairwise tensor products of the marginal spline bases are appended
+to the design matrix, adding \code{df^2} columns per pair.  This allows
+the model to capture interaction effects (e.g. Z1 * Z2) without
+adaptive smoothing parameter estimation.
 }
 \keyword{internal}
