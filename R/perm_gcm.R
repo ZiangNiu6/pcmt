@@ -123,16 +123,14 @@ perm_gcm <- function(Y, X, Z,
       var_vals[var_vals <= 0] <- Inf
       T_perm <- sqrt(nd) * mean_vals / sqrt(var_vals)
     }
-  } else if (identical(reg_XonZ, "gam") &&
-             mX$model$family$family == "gaussian" &&
-             mX$model$family$link == "identity") {
-    ## --- Gaussian identity GAM fast path: vectorized penalized-LS ---
-    proj <- precompute_gam_projection(mX)
+  } else if (is_nslrm_fastpath(reg_XonZ, args_XonZ)) {
+    ## --- Vectorized nslrm fast path (natural spline + OLS) ---
+    Q <- precompute_nslrm_projection(mX)
     perm_mat <- replicate(B, sample.int(n))
 
     if (NCOL(X) == 1L) {
       X_perm_mat <- apply_permutations(c(X), perm_mat)
-      rX_perm_mat <- fast_gam_gaussian_residuals(proj, X_perm_mat)
+      rX_perm_mat <- fast_lrm_residuals(Q, X_perm_mat)
       R_perm_mat <- rX_perm_mat * c(rY)
       T_perm <- vectorized_studentized_stat(R_perm_mat)
     } else {
@@ -142,7 +140,7 @@ perm_gcm <- function(Y, X, Z,
       S2 <- numeric(B)
       for (j in seq_len(d)) {
         Xj_perm_mat <- apply_permutations(X[, j], perm_mat)
-        rXj_perm_mat <- fast_gam_gaussian_residuals(proj, Xj_perm_mat)
+        rXj_perm_mat <- fast_lrm_residuals(Q, Xj_perm_mat)
         Rj <- rXj_perm_mat * c(rY)
         S1 <- S1 + colSums(Rj)
         S2 <- S2 + colSums(Rj^2)

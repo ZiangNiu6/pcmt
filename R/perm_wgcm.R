@@ -168,6 +168,32 @@ perm_wgcm <- function(Y, X, Z,
       }
       T_perm <- apply(Tj_mat, 2, max)
     }
+  } else if (is_nslrm_fastpath(reg_XonZ, args_XonZ)) {
+    ## --- Vectorized nslrm fast path (natural spline + OLS) ---
+    ## Fit one nslrm model on first column to get the basis, then project
+    ns_df <- if (!is.null(args_XonZ$df)) args_XonZ$df else 4L
+    tmp_fit <- fit_nslrm(y = X_D2[, 1], x = Z_D2, df = ns_df)
+    Q_D2 <- precompute_nslrm_projection(tmp_fit)
+    perm_mat <- replicate(B, sample.int(n))
+    d <- NCOL(X_D2)
+
+    if (d == 1L) {
+      X_perm_mat <- apply_permutations(c(X_D2), perm_mat)
+      rX_perm_mat <- fast_lrm_residuals(Q_D2, X_perm_mat)
+      rX_w_perm_mat <- rX_perm_mat * c(W)
+      R_perm_mat <- c(rY) * rX_w_perm_mat
+      T_perm <- vectorized_studentized_stat(R_perm_mat)
+    } else {
+      Tj_mat <- matrix(NA_real_, d, B)
+      for (j in seq_len(d)) {
+        Xj_perm_mat <- apply_permutations(X_D2[, j], perm_mat)
+        rXj_perm_mat <- fast_lrm_residuals(Q_D2, Xj_perm_mat)
+        rXj_w_perm_mat <- rXj_perm_mat * W[, j]
+        Rj_perm_mat <- c(rY) * rXj_w_perm_mat
+        Tj_mat[j, ] <- vectorized_studentized_stat(Rj_perm_mat)
+      }
+      T_perm <- apply(Tj_mat, 2, max)
+    }
   } else if (n_cores > 1L && requireNamespace("parallel", quietly = TRUE)) {
     ## --- Parallel loop for non-lrm methods ---
     T_perm <- unlist(parallel::mclapply(seq_len(B), function(b) {

@@ -55,6 +55,9 @@ fit_regression <- function(y, x, method = "rf", args = NULL) {
   if (identical(method, "gam")) {
     return(do.call(fit_gam, c(list(y = y, x = x), args)))
   }
+  if (identical(method, "nslrm")) {
+    return(do.call(fit_nslrm, c(list(y = y, x = x), args)))
+  }
   fn <- get(method, envir = asNamespace("comets"))
   do.call(fn, c(list(y = y, x = x), args))
 }
@@ -188,6 +191,107 @@ split_sample <- function(Y, X, Z, frac = 0.5, indices = NULL) {
   )
 }
 
+# ---- Natural spline + OLS (nslrm) ----
+
+#' Fit a natural-spline expanded OLS model
+#'
+#' Expands each predictor column into a natural spline basis via
+#' \code{splines::ns()}, then fits OLS on the combined expanded design.
+#' Because the model is linear in the expanded basis, the existing QR-based
+#' fast path (\code{\link{precompute_qr_projection}} /
+#' \code{\link{fast_lrm_residuals}}) applies directly.
+#'
+#' @param y Response vector or matrix.
+#' @param x Predictor matrix.  Each column is expanded independently.
+#' @param df Degrees of freedom for each natural spline basis (default 4).
+#' @return An object of class \code{"nslrm_fit"} containing the fitted
+#'   \code{lm} model, the list of \code{ns} basis objects (for prediction on
+#'   new data), and the original column names.
+#' @keywords internal
+fit_nslrm <- function(y, x, df = 4) {
+  x <- as.matrix(x)
+  p <- ncol(x)
+  col_nms <- if (!is.null(colnames(x))) colnames(x) else paste0("V", seq_len(p))
+  colnames(x) <- col_nms
+
+  bases <- vector("list", p)
+  basis_mats <- vector("list", p)
+  for (j in seq_len(p)) {
+    bases[[j]] <- splines::ns(x[, j], df = df)
+    basis_mats[[j]] <- bases[[j]]
+  }
+  names(bases) <- col_nms
+
+  X_expanded <- do.call(cbind, basis_mats)
+  design <- cbind(1, X_expanded)
+  y_mat <- if (is.matrix(y)) y else as.matrix(y)
+  fit <- stats::lm.fit(design, y_mat)
+
+  structure(
+    list(model = fit, bases = bases, col_names = col_nms,
+         fitted = fit$fitted.values),
+    class = "nslrm_fit"
+  )
+}
+
+#' Expand new data using stored natural spline bases
+#'
+#' @param x New predictor matrix (n x p).
+#' @param bases List of \code{ns} basis objects from \code{\link{fit_nslrm}}.
+#' @return Expanded matrix (n x sum(df)).
+#' @keywords internal
+expand_ns_basis <- function(x, bases) {
+  x <- as.matrix(x)
+  p <- length(bases)
+  mats <- vector("list", p)
+  for (j in seq_len(p)) {
+    mats[[j]] <- predict(bases[[j]], x[, j])
+  }
+  do.call(cbind, mats)
+}
+
+#' @export
+predict.nslrm_fit <- function(object, data = NULL, ...) {
+  if (is.null(data)) return(object$fitted)
+  X_expanded <- expand_ns_basis(data, object$bases)
+  cfx <- object$model$coefficients
+  cfx[is.na(cfx)] <- 0
+  c(cbind(1, X_expanded) %*% cfx)
+}
+
+#' @export
+residuals.nslrm_fit <- function(object, response = NULL, data = NULL, ...) {
+  preds <- predict(object, data = data)
+  c(response) - c(preds)
+}
+
+#' Check whether the nslrm fast path applies
+#'
+#' Returns TRUE when the regression method is \code{"nslrm"}.  Unlike
+#' \code{is_lrm_fastpath}, extra \code{args} (e.g. \code{df}) are allowed
+#' because they only affect the one-time basis construction.
+#'
+#' @param method Regression method string.
+#' @param args Optional argument list (ignored for the check).
+#' @return Logical scalar.
+#' @keywords internal
+is_nslrm_fastpath <- function(method, args) {
+  identical(method, "nslrm")
+}
+
+#' Precompute QR projection from an nslrm fit
+#'
+#' Extracts the stored natural spline bases, reconstructs the expanded design
+#' matrix, and calls \code{\link{precompute_qr_projection}} on it.
+#'
+#' @param nslrm_fit An \code{"nslrm_fit"} object from \code{\link{fit_nslrm}}.
+#' @return Q matrix suitable for \code{\link{fast_lrm_residuals}}.
+#' @keywords internal
+precompute_nslrm_projection <- function(nslrm_fit) {
+  X_expanded <- do.call(cbind, lapply(nslrm_fit$bases, as.matrix))
+  precompute_qr_projection(X_expanded)
+}
+
 # ---- Vectorized helpers for lrm fast path ----
 
 #' Check whether the lrm fast path applies
@@ -258,55 +362,4 @@ vectorized_studentized_stat <- function(R_mat) {
   sqrt(n) * cm / sqrt(v)
 }
 
-# ---- GAM fast path helpers ----
-
-#' Precompute penalized projection for Gaussian GAM fast path
-#'
-#' Extracts the linear predictor matrix and smoothing penalties from a fitted
-#' GAM, then computes the Cholesky factor of \code{crossprod(Xm) + S_lambda}
-#' where \code{S_lambda = sum(sp[j] * S[[j]])} is the total penalty matrix
-#' with smoothing parameters fixed from the initial fit.
-#'
-#' @param gam_fit A \code{"gam_fit"} object from \code{\link{fit_gam}}.
-#' @return A list with \code{Xm} (basis matrix) and \code{R_chol} (Cholesky
-#'   factor), suitable for \code{\link{fast_gam_gaussian_residuals}}.
-#' @keywords internal
-precompute_gam_projection <- function(gam_fit) {
-  gam_model <- gam_fit$model
-  Xm <- predict(gam_model, type = "lpmatrix")
-  p <- ncol(Xm)
-  sp <- gam_model$sp
-  ## Build total penalty from per-smooth penalty matrices
-  S_total <- matrix(0, p, p)
-  sp_idx <- 1L
-  for (s in gam_model$smooth) {
-    idx <- s$first.para:s$last.para
-    for (k in seq_along(s$S)) {
-      S_total[idx, idx] <- S_total[idx, idx] + sp[sp_idx] * s$S[[k]]
-      sp_idx <- sp_idx + 1L
-    }
-  }
-  M <- crossprod(Xm) + S_total
-  R_chol <- chol(M)
-  list(Xm = Xm, R_chol = R_chol)
-}
-
-#' Compute Gaussian GAM residuals via penalized projection
-#'
-#' Given the precomputed basis matrix and Cholesky factor, computes
-#' penalised least-squares residuals for one or more response columns
-#' in a single matrix operation.  Cost is O(p^2 B + n p B) where p is
-#' the number of basis functions and B the number of columns in
-#' \code{Y_mat}.
-#'
-#' @param proj List from \code{\link{precompute_gam_projection}}.
-#' @param Y_mat Response matrix (n x B).
-#' @return Residual matrix (n x B).
-#' @keywords internal
-fast_gam_gaussian_residuals <- function(proj, Y_mat) {
-  XtY <- crossprod(proj$Xm, Y_mat)
-  beta <- backsolve(proj$R_chol,
-                    forwardsolve(t(proj$R_chol), XtY))
-  Y_mat - proj$Xm %*% beta
-}
 

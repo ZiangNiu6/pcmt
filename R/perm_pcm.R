@@ -159,6 +159,7 @@ perm_pcm <- function(Y, X, Z = NULL,
               is_lrm_fastpath(reg_YhatonZ, args_YhatonZ) &&
               is_lrm_fastpath(reg_RonZ, args_RonZ)
   lrm_proj <- is_lrm_fastpath(reg_RonZ, args_RonZ)
+  nslrm_proj <- is_nslrm_fastpath(reg_RonZ, args_RonZ)
 
   if (lrm_full) {
     ## --- Full lrm fast path ---
@@ -195,6 +196,24 @@ perm_pcm <- function(Y, X, Z = NULL,
   } else if (lrm_proj) {
     ## --- Partial fast path: loop over compute_fhat, batch projection ---
     Q_W <- precompute_qr_projection(W_D1)
+    perm_mat <- replicate(B, sample.int(n))
+    fhat_perm_mat <- matrix(NA_real_, n, B)
+
+    for (b in seq_len(B)) {
+      Xj_perm <- Xj_D1[perm_mat[, b], , drop = FALSE]
+      XW_D1_perm <- cbind(Xj_perm, W_D1)
+      fhat_perm_mat[, b] <- compute_fhat(XW_D1_perm, W_D1)
+    }
+
+    rF_perm_mat <- fast_lrm_residuals(Q_W, fhat_perm_mat)
+    L_perm_mat <- c(rY) * rF_perm_mat
+    T_perm <- vectorized_studentized_stat(L_perm_mat)
+
+  } else if (nslrm_proj) {
+    ## --- Partial nslrm fast path: loop over compute_fhat, batch projection ---
+    ns_df <- if (!is.null(args_RonZ$df)) args_RonZ$df else 4L
+    tmp_fit <- fit_nslrm(y = fhat_D1, x = W_D1, df = ns_df)
+    Q_W <- precompute_nslrm_projection(tmp_fit)
     perm_mat <- replicate(B, sample.int(n))
     fhat_perm_mat <- matrix(NA_real_, n, B)
 
