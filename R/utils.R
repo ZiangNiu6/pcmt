@@ -257,3 +257,56 @@ vectorized_studentized_stat <- function(R_mat) {
   v[v <= 0] <- Inf
   sqrt(n) * cm / sqrt(v)
 }
+
+# ---- GAM fast path helpers ----
+
+#' Precompute penalized projection for Gaussian GAM fast path
+#'
+#' Extracts the linear predictor matrix and smoothing penalties from a fitted
+#' GAM, then computes the Cholesky factor of \code{crossprod(Xm) + S_lambda}
+#' where \code{S_lambda = sum(sp[j] * S[[j]])} is the total penalty matrix
+#' with smoothing parameters fixed from the initial fit.
+#'
+#' @param gam_fit A \code{"gam_fit"} object from \code{\link{fit_gam}}.
+#' @return A list with \code{Xm} (basis matrix) and \code{R_chol} (Cholesky
+#'   factor), suitable for \code{\link{fast_gam_gaussian_residuals}}.
+#' @keywords internal
+precompute_gam_projection <- function(gam_fit) {
+  gam_model <- gam_fit$model
+  Xm <- predict(gam_model, type = "lpmatrix")
+  p <- ncol(Xm)
+  sp <- gam_model$sp
+  ## Build total penalty from per-smooth penalty matrices
+  S_total <- matrix(0, p, p)
+  sp_idx <- 1L
+  for (s in gam_model$smooth) {
+    idx <- s$first.para:s$last.para
+    for (k in seq_along(s$S)) {
+      S_total[idx, idx] <- S_total[idx, idx] + sp[sp_idx] * s$S[[k]]
+      sp_idx <- sp_idx + 1L
+    }
+  }
+  M <- crossprod(Xm) + S_total
+  R_chol <- chol(M)
+  list(Xm = Xm, R_chol = R_chol)
+}
+
+#' Compute Gaussian GAM residuals via penalized projection
+#'
+#' Given the precomputed basis matrix and Cholesky factor, computes
+#' penalised least-squares residuals for one or more response columns
+#' in a single matrix operation.  Cost is O(p^2 B + n p B) where p is
+#' the number of basis functions and B the number of columns in
+#' \code{Y_mat}.
+#'
+#' @param proj List from \code{\link{precompute_gam_projection}}.
+#' @param Y_mat Response matrix (n x B).
+#' @return Residual matrix (n x B).
+#' @keywords internal
+fast_gam_gaussian_residuals <- function(proj, Y_mat) {
+  XtY <- crossprod(proj$Xm, Y_mat)
+  beta <- backsolve(proj$R_chol,
+                    forwardsolve(t(proj$R_chol), XtY))
+  Y_mat - proj$Xm %*% beta
+}
+

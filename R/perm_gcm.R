@@ -123,6 +123,35 @@ perm_gcm <- function(Y, X, Z,
       var_vals[var_vals <= 0] <- Inf
       T_perm <- sqrt(nd) * mean_vals / sqrt(var_vals)
     }
+  } else if (identical(reg_XonZ, "gam") &&
+             mX$model$family$family == "gaussian" &&
+             mX$model$family$link == "identity") {
+    ## --- Gaussian identity GAM fast path: vectorized penalized-LS ---
+    proj <- precompute_gam_projection(mX)
+    perm_mat <- replicate(B, sample.int(n))
+
+    if (NCOL(X) == 1L) {
+      X_perm_mat <- apply_permutations(c(X), perm_mat)
+      rX_perm_mat <- fast_gam_gaussian_residuals(proj, X_perm_mat)
+      R_perm_mat <- rX_perm_mat * c(rY)
+      T_perm <- vectorized_studentized_stat(R_perm_mat)
+    } else {
+      d <- NCOL(X)
+      nd <- as.numeric(n * d)
+      S1 <- numeric(B)
+      S2 <- numeric(B)
+      for (j in seq_len(d)) {
+        Xj_perm_mat <- apply_permutations(X[, j], perm_mat)
+        rXj_perm_mat <- fast_gam_gaussian_residuals(proj, Xj_perm_mat)
+        Rj <- rXj_perm_mat * c(rY)
+        S1 <- S1 + colSums(Rj)
+        S2 <- S2 + colSums(Rj^2)
+      }
+      mean_vals <- S1 / nd
+      var_vals <- S2 / nd - mean_vals^2
+      var_vals[var_vals <= 0] <- Inf
+      T_perm <- sqrt(nd) * mean_vals / sqrt(var_vals)
+    }
   } else if (n_cores > 1L && requireNamespace("parallel", quietly = TRUE)) {
     ## --- Parallel loop for non-lrm methods ---
     T_perm <- unlist(parallel::mclapply(seq_len(B), function(b) {
