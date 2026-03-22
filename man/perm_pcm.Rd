@@ -21,6 +21,8 @@ perm_pcm(
   indices = NULL,
   B = 499L,
   n_cores = 1L,
+  h = NULL,
+  alpha = 0.05,
   alternative = c("two.sided", "greater", "less"),
   return_fitted_models = FALSE
 )
@@ -52,12 +54,23 @@ additional arguments for each regression.}
 
 \item{indices}{Optional pre-specified indices for D2 (direction estimation fold).}
 
-\item{B}{Number of permutations (default 499).}
+\item{B}{Number of permutations (default 499). When \code{h} is specified,
+this serves as the deterministic cap \eqn{T_{max}} on the number of
+sequential permutations.}
 
 \item{n_cores}{Number of cores for parallel permutation loop (default 1,
-sequential). Only used when no lrm fast path is applicable. Requires
-the \code{parallel} package. Uses \code{parallel::mclapply} (not available
-on Windows).}
+sequential). Only used when no lrm fast path is applicable and
+adaptive permutation is not active. Requires the \code{parallel} package.
+Uses \code{parallel::mclapply} (not available on Windows).}
+
+\item{h}{Tuning parameter for adaptive permutation (default NULL, which
+uses the standard fixed-B permutation). A positive integer controlling
+early stopping: the procedure stops once \code{h} permutation scores
+exceed the observed score (futility) or the anytime-valid p-value drops
+below \code{alpha} (rejection). Recommended values are between 10 and 30.}
+
+\item{alpha}{Significance level for adaptive stopping rules (default 0.05).
+Only used when \code{h} is not NULL.}
 
 \item{alternative}{Type of alternative hypothesis. One of \code{"two.sided"},
 \code{"greater"} (default), or \code{"less"}.}
@@ -75,7 +88,14 @@ An object of class \code{c("perm_pcm", "htest")} with components:
 \item{alternative}{The alternative hypothesis.}
 \item{rY}{Residuals of Y from reduced model on D1.}
 \item{rF}{Residuals of the direction from projection on D1.}
-\item{perm_stats}{Vector of permutation test statistics (length B).}
+\item{perm_stats}{Vector of permutation test statistics (length B, or
+shorter if adaptive permutation stopped early).}
+\item{adaptive}{List with adaptive permutation details (if \code{h} was
+specified): \code{h}, \code{alpha}, \code{K} (loss count),
+\code{t_star} (step of h-th loss), \code{stopped_early} (logical),
+\code{stop_reason} ("rejection", "futility", or "cap"), and
+\code{trajectory} (data frame with columns \code{t}, \code{S},
+\code{K}, \code{p_AV}).}
 \item{models}{Fitted models (if \code{return_fitted_models = TRUE}).}
 }
 }

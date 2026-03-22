@@ -16,11 +16,20 @@
 #' @param args_YonZ,args_XonZ,args_wfun Optional lists of additional arguments
 #'   for each regression.
 #' @param frac Fraction of data for weight estimation fold D1 (default 0.5).
-#' @param B Number of permutations (default 499).
+#' @param B Number of permutations (default 499). When \code{h} is specified,
+#'   this serves as the deterministic cap \eqn{T_{max}} on the number of
+#'   sequential permutations.
 #' @param n_cores Number of cores for parallel permutation loop (default 1,
-#'   sequential). Only used when the lrm fast path is not applicable. Requires
-#'   the \code{parallel} package. Uses \code{parallel::mclapply} (not available
-#'   on Windows).
+#'   sequential). Only used when the lrm fast path is not applicable and
+#'   adaptive permutation is not active. Requires the \code{parallel} package.
+#'   Uses \code{parallel::mclapply} (not available on Windows).
+#' @param h Tuning parameter for adaptive permutation (default NULL, which
+#'   uses the standard fixed-B permutation). A positive integer controlling
+#'   early stopping: the procedure stops once \code{h} permutation scores
+#'   exceed the observed score (futility) or the anytime-valid p-value drops
+#'   below \code{alpha} (rejection). Recommended values are between 10 and 30.
+#' @param alpha Significance level for adaptive stopping rules (default 0.05).
+#'   Only used when \code{h} is not NULL.
 #' @param alternative Type of alternative hypothesis. One of \code{"two.sided"},
 #'   \code{"greater"} (default), or \code{"less"}.
 #' @param return_fitted_models Logical. If TRUE, return fitted regression models.
@@ -55,7 +64,14 @@
 #'   \item{rY}{Residuals from Y on Z on D2.}
 #'   \item{rX}{Residuals from X on Z on D2 (original, unpermuted).}
 #'   \item{W}{Estimated weight matrix on D2.}
-#'   \item{perm_stats}{Vector of permutation test statistics (length B).}
+#'   \item{perm_stats}{Vector of permutation test statistics (length B, or
+#'     shorter if adaptive permutation stopped early).}
+#'   \item{adaptive}{List with adaptive permutation details (if \code{h} was
+#'     specified): \code{h}, \code{alpha}, \code{K} (loss count),
+#'     \code{t_star} (step of h-th loss), \code{stopped_early} (logical),
+#'     \code{stop_reason} ("rejection", "futility", or "cap"), and
+#'     \code{trajectory} (data frame with columns \code{t}, \code{S},
+#'     \code{K}, \code{p_AV}).}
 #'   \item{models}{Fitted models (if \code{return_fitted_models = TRUE}).}
 #' }
 #'
@@ -80,10 +96,17 @@ perm_wgcm <- function(Y, X, Z,
                       frac = 0.5,
                       B = 499L,
                       n_cores = 1L,
+                      h = NULL,
+                      alpha = 0.05,
                       alternative = c("two.sided", "greater", "less"),
                       return_fitted_models = FALSE) {
   alternative <- match.arg(alternative)
   B <- as.integer(B)
+  adaptive <- !is.null(h)
+  if (adaptive) {
+    h <- as.integer(h)
+    stopifnot(h >= 1L, alpha > 0, alpha < 1)
+  }
 
   ## Data validation
   Y <- check_data(Y, "Y", "pcm")  # scalar Y for WGCM
@@ -143,7 +166,76 @@ perm_wgcm <- function(Y, X, Z,
   }
 
   ## ---- Permutation loop on D2 ----
-  if (is_lrm_fastpath(reg_XonZ, args_XonZ)) {
+  adaptive_info <- NULL
+
+  ## Helper: compute one permutation statistic for WGCM
+  compute_wgcm_perm_stat <- function(perm_idx) {
+    X_perm <- X_D2[perm_idx, , drop = FALSE]
+    rX_perm <- apply(X_perm, 2, function(tX) {
+      m <- fit_regression(y = tX, x = Z_D2, method = reg_XonZ,
+                          args = args_XonZ)
+      stats::residuals(m, response = tX, data = Z_D2)
+    })
+    rX_perm <- as.matrix(rX_perm)
+    rX_w_perm <- rX_perm * W
+    R_perm <- c(rY) * rX_w_perm
+    if (NCOL(R_perm) == 1) {
+      studentized_stat(c(R_perm))
+    } else {
+      max(apply(R_perm, 2, studentized_stat))
+    }
+  }
+
+  if (adaptive) {
+    ## --- Adaptive sequential loop ---
+    S0 <- score_map(T_obs, alternative)
+    K <- 0L
+    t_star <- Inf
+    T_perm <- numeric(B)
+    traj_S <- numeric(B)
+    traj_K <- integer(B)
+    traj_pAV <- numeric(B)
+    stop_reason <- "cap"
+    actual_B <- B
+
+    for (b in seq_len(B)) {
+      perm <- sample.int(n)
+      T_perm[b] <- compute_wgcm_perm_stat(perm)
+
+      S_b <- score_map(T_perm[b], alternative)
+      traj_S[b] <- S_b
+      if (S_b >= S0) {
+        K <- K + 1L
+        if (K == h && is.infinite(t_star)) t_star <- b
+      }
+      traj_K[b] <- K
+      traj_pAV[b] <- adaptive_pvalue(b, K, h, t_star)
+
+      if (traj_pAV[b] <= alpha) {
+        actual_B <- b
+        stop_reason <- "rejection"
+        break
+      }
+      if (K == h && traj_pAV[b] > alpha) {
+        actual_B <- b
+        stop_reason <- "futility"
+        break
+      }
+    }
+
+    T_perm <- T_perm[seq_len(actual_B)]
+    pval <- traj_pAV[actual_B]
+    adaptive_info <- list(
+      h = h, alpha = alpha, K = K, t_star = t_star,
+      stopped_early = actual_B < B, stop_reason = stop_reason,
+      trajectory = data.frame(
+        t = seq_len(actual_B),
+        S = traj_S[seq_len(actual_B)],
+        K = traj_K[seq_len(actual_B)],
+        p_AV = traj_pAV[seq_len(actual_B)]
+      )
+    )
+  } else if (is_lrm_fastpath(reg_XonZ, args_XonZ)) {
     ## --- Vectorized lrm fast path ---
     Q_D2 <- precompute_qr_projection(Z_D2)
     perm_mat <- replicate(B, sample.int(n))
@@ -168,9 +260,9 @@ perm_wgcm <- function(Y, X, Z,
       }
       T_perm <- apply(Tj_mat, 2, max)
     }
+    pval <- perm_pvalue(T_obs, T_perm, alternative)
   } else if (is_nslrm_fastpath(reg_XonZ, args_XonZ)) {
     ## --- Vectorized nslrm fast path (natural spline + OLS) ---
-    ## Fit one nslrm model on first column to get the basis, then project
     ns_df <- if (!is.null(args_XonZ$df)) args_XonZ$df else 4L
     tmp_fit <- fit_nslrm(y = X_D2[, 1], x = Z_D2, df = ns_df)
     Q_D2 <- precompute_nslrm_projection(tmp_fit)
@@ -194,54 +286,26 @@ perm_wgcm <- function(Y, X, Z,
       }
       T_perm <- apply(Tj_mat, 2, max)
     }
+    pval <- perm_pvalue(T_obs, T_perm, alternative)
   } else if (n_cores > 1L && requireNamespace("parallel", quietly = TRUE)) {
     ## --- Parallel loop for non-lrm methods ---
     T_perm <- unlist(parallel::mclapply(seq_len(B), function(b) {
-      perm <- sample.int(n)
-      X_perm <- X_D2[perm, , drop = FALSE]
-      rX_perm <- apply(X_perm, 2, function(tX) {
-        m <- fit_regression(y = tX, x = Z_D2, method = reg_XonZ,
-                            args = args_XonZ)
-        stats::residuals(m, response = tX, data = Z_D2)
-      })
-      rX_perm <- as.matrix(rX_perm)
-      rX_w_perm <- rX_perm * W
-      R_perm <- c(rY) * rX_w_perm
-      if (NCOL(R_perm) == 1) {
-        studentized_stat(c(R_perm))
-      } else {
-        max(apply(R_perm, 2, studentized_stat))
-      }
+      compute_wgcm_perm_stat(sample.int(n))
     }, mc.cores = n_cores))
+    pval <- perm_pvalue(T_obs, T_perm, alternative)
   } else {
     ## --- Sequential loop (original) ---
     T_perm <- numeric(B)
     for (b in seq_len(B)) {
-      perm <- sample.int(n)
-      X_perm <- X_D2[perm, , drop = FALSE]
-      rX_perm <- apply(X_perm, 2, function(tX) {
-        m <- fit_regression(y = tX, x = Z_D2, method = reg_XonZ,
-                            args = args_XonZ)
-        stats::residuals(m, response = tX, data = Z_D2)
-      })
-      rX_perm <- as.matrix(rX_perm)
-      rX_w_perm <- rX_perm * W
-      R_perm <- c(rY) * rX_w_perm
-      if (NCOL(R_perm) == 1) {
-        T_perm[b] <- studentized_stat(c(R_perm))
-      } else {
-        T_perm[b] <- max(apply(R_perm, 2, studentized_stat))
-      }
+      T_perm[b] <- compute_wgcm_perm_stat(sample.int(n))
     }
+    pval <- perm_pvalue(T_obs, T_perm, alternative)
   }
-
-  ## Permutation p-value
-  pval <- perm_pvalue(T_obs, T_perm, alternative)
 
   ## Return htest object
   stat <- T_obs
   names(stat) <- "T"
-  param <- c("B" = B)
+  param <- c("B" = length(T_perm))
 
   models_out <- if (return_fitted_models) {
     list(reg_YonZ_weight = wYZ, reg_wfun = mW, reg_YonZ_test = mY)
@@ -249,17 +313,24 @@ perm_wgcm <- function(Y, X, Z,
     NULL
   }
 
+  method_str <- if (adaptive) {
+    "Adaptive permutation-calibrated weighted generalised covariance measure test"
+  } else {
+    "Permutation-calibrated weighted generalised covariance measure test"
+  }
+
   structure(list(
     statistic = stat,
     p.value = pval,
     parameter = param,
-    method = "Permutation-calibrated weighted generalised covariance measure test",
+    method = method_str,
     data.name = paste0(deparse(match.call()), collapse = "\n"),
     alternative = alternative,
     rY = rY,
     rX = rX,
     W = W,
     perm_stats = T_perm,
+    adaptive = adaptive_info,
     models = models_out
   ), class = c("perm_wgcm", "htest"))
 }

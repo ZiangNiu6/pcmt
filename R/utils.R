@@ -32,6 +32,45 @@ perm_pvalue <- function(T_obs, T_perm, alternative = "greater") {
   )
 }
 
+#' Score map for adaptive permutation
+#'
+#' Maps a test statistic to a score based on the alternative hypothesis.
+#' For one-sided tests, the score is the statistic itself (or negated).
+#' For two-sided tests, the score is the absolute value.
+#'
+#' @param T_stat Numeric scalar or vector of test statistics.
+#' @param alternative One of "two.sided", "greater", "less".
+#' @return Numeric score(s).
+#' @keywords internal
+score_map <- function(T_stat, alternative) {
+  switch(alternative,
+    "greater" = T_stat,
+    "less" = -T_stat,
+    "two.sided" = abs(T_stat)
+  )
+}
+
+#' Anytime-valid Monte Carlo p-value
+#'
+#' Computes the anytime-valid p-value from the adaptive permutation procedure.
+#' Given the current count of losses K (permutation scores >= observed score)
+#' at step t, returns \code{h / (t + h - K)} if \code{K < h}, or
+#' \code{h / t_star} if \code{K >= h}.
+#'
+#' @param t Current step (number of permutations drawn so far).
+#' @param K Number of losses (permutation scores >= observed score).
+#' @param h Tuning parameter (positive integer).
+#' @param t_star Step at which the h-th loss occurred (Inf if not yet).
+#' @return Scalar anytime-valid p-value.
+#' @keywords internal
+adaptive_pvalue <- function(t, K, h, t_star) {
+  if (K < h) {
+    h / (t + h - K)
+  } else {
+    h / t_star
+  }
+}
+
 #' Fit a regression model using comets infrastructure
 #'
 #' Thin wrapper around comets regression functions. Fits a model of y on x

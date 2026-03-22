@@ -3,3 +3,4 @@
 ^doc$
 ^Meta$
 ^\.Rproj\.user$
+^benchmark_adaptive\.R$

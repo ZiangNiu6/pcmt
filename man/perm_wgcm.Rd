@@ -17,6 +17,8 @@ perm_wgcm(
   frac = 0.5,
   B = 499L,
   n_cores = 1L,
+  h = NULL,
+  alpha = 0.05,
   alternative = c("two.sided", "greater", "less"),
   return_fitted_models = FALSE
 )
@@ -40,12 +42,23 @@ for each regression.}
 
 \item{frac}{Fraction of data for weight estimation fold D1 (default 0.5).}
 
-\item{B}{Number of permutations (default 499).}
+\item{B}{Number of permutations (default 499). When \code{h} is specified,
+this serves as the deterministic cap \eqn{T_{max}} on the number of
+sequential permutations.}
 
 \item{n_cores}{Number of cores for parallel permutation loop (default 1,
-sequential). Only used when the lrm fast path is not applicable. Requires
-the \code{parallel} package. Uses \code{parallel::mclapply} (not available
-on Windows).}
+sequential). Only used when the lrm fast path is not applicable and
+adaptive permutation is not active. Requires the \code{parallel} package.
+Uses \code{parallel::mclapply} (not available on Windows).}
+
+\item{h}{Tuning parameter for adaptive permutation (default NULL, which
+uses the standard fixed-B permutation). A positive integer controlling
+early stopping: the procedure stops once \code{h} permutation scores
+exceed the observed score (futility) or the anytime-valid p-value drops
+below \code{alpha} (rejection). Recommended values are between 10 and 30.}
+
+\item{alpha}{Significance level for adaptive stopping rules (default 0.05).
+Only used when \code{h} is not NULL.}
 
 \item{alternative}{Type of alternative hypothesis. One of \code{"two.sided"},
 \code{"greater"} (default), or \code{"less"}.}
@@ -64,7 +77,14 @@ An object of class \code{c("perm_wgcm", "htest")} with components:
 \item{rY}{Residuals from Y on Z on D2.}
 \item{rX}{Residuals from X on Z on D2 (original, unpermuted).}
 \item{W}{Estimated weight matrix on D2.}
-\item{perm_stats}{Vector of permutation test statistics (length B).}
+\item{perm_stats}{Vector of permutation test statistics (length B, or
+shorter if adaptive permutation stopped early).}
+\item{adaptive}{List with adaptive permutation details (if \code{h} was
+specified): \code{h}, \code{alpha}, \code{K} (loss count),
+\code{t_star} (step of h-th loss), \code{stopped_early} (logical),
+\code{stop_reason} ("rejection", "futility", or "cap"), and
+\code{trajectory} (data frame with columns \code{t}, \code{S},
+\code{K}, \code{p_AV}).}
 \item{models}{Fitted models (if \code{return_fitted_models = TRUE}).}
 }
 }

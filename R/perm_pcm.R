@@ -21,11 +21,20 @@
 #'   additional arguments for each regression.
 #' @param frac Fraction of data for D1 (test fold). Default 0.5.
 #' @param indices Optional pre-specified indices for D2 (direction estimation fold).
-#' @param B Number of permutations (default 499).
+#' @param B Number of permutations (default 499). When \code{h} is specified,
+#'   this serves as the deterministic cap \eqn{T_{max}} on the number of
+#'   sequential permutations.
 #' @param n_cores Number of cores for parallel permutation loop (default 1,
-#'   sequential). Only used when no lrm fast path is applicable. Requires
-#'   the \code{parallel} package. Uses \code{parallel::mclapply} (not available
-#'   on Windows).
+#'   sequential). Only used when no lrm fast path is applicable and
+#'   adaptive permutation is not active. Requires the \code{parallel} package.
+#'   Uses \code{parallel::mclapply} (not available on Windows).
+#' @param h Tuning parameter for adaptive permutation (default NULL, which
+#'   uses the standard fixed-B permutation). A positive integer controlling
+#'   early stopping: the procedure stops once \code{h} permutation scores
+#'   exceed the observed score (futility) or the anytime-valid p-value drops
+#'   below \code{alpha} (rejection). Recommended values are between 10 and 30.
+#' @param alpha Significance level for adaptive stopping rules (default 0.05).
+#'   Only used when \code{h} is not NULL.
 #' @param alternative Type of alternative hypothesis. One of \code{"two.sided"},
 #'   \code{"greater"} (default), or \code{"less"}.
 #' @param return_fitted_models Logical. If TRUE, return fitted regression models.
@@ -53,7 +62,14 @@
 #'   \item{alternative}{The alternative hypothesis.}
 #'   \item{rY}{Residuals of Y from reduced model on D1.}
 #'   \item{rF}{Residuals of the direction from projection on D1.}
-#'   \item{perm_stats}{Vector of permutation test statistics (length B).}
+#'   \item{perm_stats}{Vector of permutation test statistics (length B, or
+#'     shorter if adaptive permutation stopped early).}
+#'   \item{adaptive}{List with adaptive permutation details (if \code{h} was
+#'     specified): \code{h}, \code{alpha}, \code{K} (loss count),
+#'     \code{t_star} (step of h-th loss), \code{stopped_early} (logical),
+#'     \code{stop_reason} ("rejection", "futility", or "cap"), and
+#'     \code{trajectory} (data frame with columns \code{t}, \code{S},
+#'     \code{K}, \code{p_AV}).}
 #'   \item{models}{Fitted models (if \code{return_fitted_models = TRUE}).}
 #' }
 #'
@@ -78,10 +94,17 @@ perm_pcm <- function(Y, X, Z = NULL,
                      frac = 0.5, indices = NULL,
                      B = 499L,
                      n_cores = 1L,
+                     h = NULL,
+                     alpha = 0.05,
                      alternative = c("two.sided", "greater", "less"),
                      return_fitted_models = FALSE) {
   alternative <- match.arg(alternative)
   B <- as.integer(B)
+  adaptive <- !is.null(h)
+  if (adaptive) {
+    h <- as.integer(h)
+    stopifnot(h >= 1L, alpha > 0, alpha < 1)
+  }
 
   ## Data validation
   Y <- check_data(Y, "Y", "pcm")
@@ -155,13 +178,70 @@ perm_pcm <- function(Y, X, Z = NULL,
   T_obs <- studentized_stat(L_obs)
 
   ## ---- Permutation loop ----
+  adaptive_info <- NULL
   lrm_full <- is_lrm_fastpath(reg_YonXZ, args_YonXZ) &&
               is_lrm_fastpath(reg_YhatonZ, args_YhatonZ) &&
               is_lrm_fastpath(reg_RonZ, args_RonZ)
   lrm_proj <- is_lrm_fastpath(reg_RonZ, args_RonZ)
   nslrm_proj <- is_nslrm_fastpath(reg_RonZ, args_RonZ)
 
-  if (lrm_full) {
+  if (adaptive) {
+    ## --- Adaptive sequential loop ---
+    S0 <- score_map(T_obs, alternative)
+    K <- 0L
+    t_star <- Inf
+    T_perm <- numeric(B)
+    traj_S <- numeric(B)
+    traj_K <- integer(B)
+    traj_pAV <- numeric(B)
+    stop_reason <- "cap"
+    actual_B <- B
+
+    for (b in seq_len(B)) {
+      perm <- sample.int(n)
+      Xj_perm <- Xj_D1[perm, , drop = FALSE]
+      XW_D1_perm <- cbind(Xj_perm, W_D1)
+      fhat_perm <- compute_fhat(XW_D1_perm, W_D1)
+      m_hat_pfj_perm <- fit_regression(y = fhat_perm, x = W_D1,
+                                       method = reg_RonZ, args = args_RonZ)
+      rF_perm <- c(fhat_perm) - c(stats::predict(m_hat_pfj_perm, data = W_D1))
+      L_perm <- rY * rF_perm
+      T_perm[b] <- studentized_stat(L_perm)
+
+      S_b <- score_map(T_perm[b], alternative)
+      traj_S[b] <- S_b
+      if (S_b >= S0) {
+        K <- K + 1L
+        if (K == h && is.infinite(t_star)) t_star <- b
+      }
+      traj_K[b] <- K
+      traj_pAV[b] <- adaptive_pvalue(b, K, h, t_star)
+
+      if (traj_pAV[b] <= alpha) {
+        actual_B <- b
+        stop_reason <- "rejection"
+        break
+      }
+      if (K == h && traj_pAV[b] > alpha) {
+        actual_B <- b
+        stop_reason <- "futility"
+        break
+      }
+    }
+
+    T_perm <- T_perm[seq_len(actual_B)]
+    pval <- traj_pAV[actual_B]
+    adaptive_info <- list(
+      h = h, alpha = alpha, K = K, t_star = t_star,
+      stopped_early = actual_B < B, stop_reason = stop_reason,
+      trajectory = data.frame(
+        t = seq_len(actual_B),
+        S = traj_S[seq_len(actual_B)],
+        K = traj_K[seq_len(actual_B)],
+        p_AV = traj_pAV[seq_len(actual_B)]
+      )
+    )
+  } else if (lrm_full) {
     ## --- Full lrm fast path ---
     ## Decompose fhat_perm = beta_j * Xj_perm + const_fhat
     cfx_p <- stats::coef(m_hat_p)
@@ -192,6 +272,7 @@ perm_pcm <- function(Y, X, Z = NULL,
 
     L_perm_mat <- c(rY) * rF_perm_mat
     T_perm <- vectorized_studentized_stat(L_perm_mat)
+    pval <- perm_pvalue(T_obs, T_perm, alternative)
 
   } else if (lrm_proj) {
     ## --- Partial fast path: loop over compute_fhat, batch projection ---
@@ -208,6 +289,7 @@ perm_pcm <- function(Y, X, Z = NULL,
     rF_perm_mat <- fast_lrm_residuals(Q_W, fhat_perm_mat)
     L_perm_mat <- c(rY) * rF_perm_mat
     T_perm <- vectorized_studentized_stat(L_perm_mat)
+    pval <- perm_pvalue(T_obs, T_perm, alternative)
 
   } else if (nslrm_proj) {
     ## --- Partial nslrm fast path: loop over compute_fhat, batch projection ---
@@ -226,6 +308,7 @@ perm_pcm <- function(Y, X, Z = NULL,
     rF_perm_mat <- fast_lrm_residuals(Q_W, fhat_perm_mat)
     L_perm_mat <- c(rY) * rF_perm_mat
     T_perm <- vectorized_studentized_stat(L_perm_mat)
+    pval <- perm_pvalue(T_obs, T_perm, alternative)
 
   } else if (n_cores > 1L && requireNamespace("parallel", quietly = TRUE)) {
     ## --- Parallel loop for non-lrm methods ---
@@ -240,6 +323,7 @@ perm_pcm <- function(Y, X, Z = NULL,
       L_perm <- rY * rF_perm
       studentized_stat(L_perm)
     }, mc.cores = n_cores))
+    pval <- perm_pvalue(T_obs, T_perm, alternative)
   } else {
     ## --- Sequential loop (original) ---
     T_perm <- numeric(B)
@@ -254,15 +338,13 @@ perm_pcm <- function(Y, X, Z = NULL,
       L_perm <- rY * rF_perm
       T_perm[b] <- studentized_stat(L_perm)
     }
+    pval <- perm_pvalue(T_obs, T_perm, alternative)
   }
-
-  ## Permutation p-value
-  pval <- perm_pvalue(T_obs, T_perm, alternative)
 
   ## Return htest object
   stat <- T_obs
   names(stat) <- "T"
-  param <- c("B" = B)
+  param <- c("B" = length(T_perm))
 
   models <- if (return_fitted_models) {
     list(m_hat_p = m_hat_p, m_hat_qj = m_hat_qj,
@@ -271,11 +353,17 @@ perm_pcm <- function(Y, X, Z = NULL,
     NULL
   }
 
+  method_str <- if (adaptive) {
+    "Adaptive permutation-calibrated projected covariance measure test"
+  } else {
+    "Permutation-calibrated projected covariance measure test"
+  }
+
   structure(list(
     statistic = stat,
     p.value = pval,
     parameter = param,
-    method = "Permutation-calibrated projected covariance measure test",
+    method = method_str,
     data.name = paste0(deparse(match.call()), collapse = "\n"),
     alternative = alternative,
     rY = rY,
@@ -283,6 +371,7 @@ perm_pcm <- function(Y, X, Z = NULL,
     perm_stats = T_perm,
     D1_indices = idx_D1,
     D2_indices = idx_D2,
+    adaptive = adaptive_info,
     models = models
   ), class = c("perm_pcm", "htest"))
 }
