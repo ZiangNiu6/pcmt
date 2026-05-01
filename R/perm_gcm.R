@@ -109,6 +109,15 @@ perm_gcm <- function(Y, X, Z,
   rY <- stats::residuals(mY, response = Y, data = Z)
 
   ## Step 2: Fit X on Z -> residuals rX (original)
+  ## For gols: inject Y|Z fitted values and theta into args
+  if (identical(reg_XonZ, "gols")) {
+    mu_Y <- c(Y) - c(rY)  # fitted values from Y|Z model
+    if (is.null(args_XonZ[["theta"]])) {
+      stop("reg_XonZ = \"gols\" requires args_XonZ$theta ",
+           "(NB dispersion parameter).")
+    }
+    args_XonZ[["mu_Y"]] <- mu_Y
+  }
   mX <- fit_regression(y = X, x = Z, method = reg_XonZ, args = args_XonZ)
   rX <- stats::residuals(mX, response = X, data = Z)
 
@@ -221,6 +230,34 @@ perm_gcm <- function(Y, X, Z,
       for (j in seq_len(d)) {
         Xj_perm_mat <- apply_permutations(X[, j], perm_mat)
         rXj_perm_mat <- fast_lrm_residuals(Q, Xj_perm_mat)
+        Rj <- rXj_perm_mat * c(rY)
+        S1 <- S1 + colSums(Rj)
+        S2 <- S2 + colSums(Rj^2)
+      }
+      mean_vals <- S1 / nd
+      var_vals <- S2 / nd - mean_vals^2
+      var_vals[var_vals <= 0] <- Inf
+      T_perm <- sqrt(nd) * mean_vals / sqrt(var_vals)
+    }
+    pval <- perm_pvalue(T_obs, T_perm, alternative)
+  } else if (is_gols_fastpath(reg_XonZ, args_XonZ)) {
+    ## --- Vectorized gols fast path (GLS with NB weights) ---
+    gols_proj <- precompute_gols_projection(mX)
+    perm_mat <- replicate(B, sample.int(n))
+
+    if (NCOL(X) == 1L) {
+      X_perm_mat <- apply_permutations(c(X), perm_mat)
+      rX_perm_mat <- fast_gols_residuals(gols_proj, X_perm_mat)
+      R_perm_mat <- rX_perm_mat * c(rY)
+      T_perm <- vectorized_studentized_stat(R_perm_mat)
+    } else {
+      d <- NCOL(X)
+      nd <- as.numeric(n * d)
+      S1 <- numeric(B)
+      S2 <- numeric(B)
+      for (j in seq_len(d)) {
+        Xj_perm_mat <- apply_permutations(X[, j], perm_mat)
+        rXj_perm_mat <- fast_gols_residuals(gols_proj, Xj_perm_mat)
         Rj <- rXj_perm_mat * c(rY)
         S1 <- S1 + colSums(Rj)
         S2 <- S2 + colSums(Rj^2)

@@ -2,6 +2,7 @@
 
 S3method(predict,nslrm_fit)
 S3method(residuals,gam_fit)
+S3method(residuals,gols_fit)
 S3method(residuals,nslrm_fit)
 export(perm_gcm)
 export(perm_pcm)

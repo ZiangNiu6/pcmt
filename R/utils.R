@@ -97,6 +97,9 @@ fit_regression <- function(y, x, method = "rf", args = NULL) {
   if (identical(method, "nslrm")) {
     return(do.call(fit_nslrm, c(list(y = y, x = x), args)))
   }
+  if (identical(method, "gols")) {
+    return(do.call(fit_gols, c(list(y = y, x = x), args)))
+  }
   fn <- get(method, envir = asNamespace("comets"))
   do.call(fn, c(list(y = y, x = x), args))
 }
@@ -399,6 +402,140 @@ precompute_nslrm_projection <- function(nslrm_fit) {
     }
   }
   precompute_qr_projection(X_expanded)
+}
+
+# ---- Generalized OLS (gols) for NB working weights ----
+
+#' Fit generalized OLS residual of X on Z using NB working weights
+#'
+#' Computes the GLS residual X_tilde = X - Z_d (Z_d' W Z_d)^{-1} Z_d' W X,
+#' where Z_d = cbind(1, Z) is the design matrix with intercept and
+#' W = diag(mu_Y / (1 + mu_Y / theta)) is the NB working weight matrix
+#' derived from the Y|Z null model.
+#'
+#' This is the covariate-adjusted X analogous to Dey et al. (2017),
+#' adapted to the GCM framework. The working weights ensure that the
+#' projection accounts for the heteroscedasticity of the NB model.
+#'
+#' @param y Response vector (X in the GCM context).
+#' @param x Predictor matrix (Z in the GCM context).
+#' @param mu_Y Fitted values from the Y|Z null model (numeric vector of length n).
+#' @param theta NB dispersion parameter (positive scalar).
+#' @return An object of class \code{"gols_fit"}.
+#' @keywords internal
+fit_gols <- function(y, x, mu_Y, theta) {
+  x <- as.matrix(x)
+  y <- as.matrix(y)
+  n <- nrow(x)
+
+  ## Working weights from NB model: W = mu / (1 + mu/theta)
+  W_hat <- mu_Y / (1 + mu_Y / theta)
+
+  ## Design matrix with intercept
+  Z_d <- cbind(1, x)
+
+  ## Weighted cross-products
+  WZ <- W_hat * Z_d                  # n x k
+  ZtWZ <- crossprod(Z_d, WZ)         # k x k
+  ZtWy <- crossprod(WZ, y)           # k x ncol(y)
+
+  ## GLS projection: y_tilde = y - Z_d %*% solve(ZtWZ, ZtWy)
+  ## Precompute the Cholesky factorization for reuse
+  R_chol <- chol(ZtWZ)
+  coefs <- backsolve(R_chol, forwardsolve(t(R_chol), ZtWy))
+  y_tilde <- y - Z_d %*% coefs
+
+  structure(
+    list(
+      fitted = y - y_tilde,
+      residuals_val = y_tilde,
+      W_hat = W_hat,
+      Z_d = Z_d,
+      R_chol = R_chol,
+      mu_Y = mu_Y,
+      theta = theta
+    ),
+    class = "gols_fit"
+  )
+}
+
+#' @export
+residuals.gols_fit <- function(object, response = NULL, data = NULL, ...) {
+  if (!is.null(data)) {
+    ## Recompute for new y (permuted X) on same Z with same weights
+    y_new <- as.matrix(response)
+    ZtWy <- crossprod(object$W_hat * object$Z_d, y_new)
+    coefs <- backsolve(object$R_chol,
+                       forwardsolve(t(object$R_chol), ZtWy))
+    return(c(y_new - object$Z_d %*% coefs))
+  }
+  c(object$residuals_val)
+}
+
+#' Check whether the gols fast path applies
+#'
+#' @param method Regression method string.
+#' @param args Argument list.
+#' @return Logical scalar.
+#' @keywords internal
+is_gols_fastpath <- function(method, args) {
+  identical(method, "gols")
+}
+
+#' Precompute GOLS projection for vectorized permutations
+#'
+#' The GOLS residual is X_tilde = X - H_W X where
+#' H_W = Z_d (Z_d' W Z_d)^{-1} Z_d' W is the weighted hat matrix.
+#' Since H_W is linear and fixed (W depends only on Y|Z model),
+#' we can precompute Q such that X_tilde = X - Q Q' X_w, enabling
+#' vectorized permutation.
+#'
+#' Returns a list with the weighted Q factor and sqrt(W) for the
+#' fast residual computation.
+#'
+#' @param gols_fit A \code{"gols_fit"} object.
+#' @return A list with components \code{Q_w} and \code{sqrt_W} for use in
+#'   \code{\link{fast_gols_residuals}}.
+#' @keywords internal
+precompute_gols_projection <- function(gols_fit) {
+  Z_d <- gols_fit$Z_d
+  W <- gols_fit$W_hat
+  sqrt_W <- sqrt(W)
+
+  ## Weighted design: Z_w = sqrt(W) * Z_d
+  Z_w <- sqrt_W * Z_d
+
+  ## QR of weighted design
+  qr_obj <- qr(Z_w)
+  Q_w <- qr.Q(qr_obj)[, seq_len(qr_obj$rank), drop = FALSE]
+
+  list(Q_w = Q_w, sqrt_W = sqrt_W)
+}
+
+#' Compute GOLS residuals for multiple response columns
+#'
+#' Given precomputed GOLS projection, computes
+#' X_tilde = X - Z_d (Z_d'WZ_d)^{-1} Z_d'WX for an n x K matrix.
+#'
+#' The trick: H_W X = Z_d (Z_d'WZ_d)^{-1} Z_d'WX.
+#' With Z_w = sqrt(W)*Z_d and Q_w = QR(Z_w), we have
+#' H_W X = (1/sqrt(W)) * Q_w Q_w' (sqrt(W) * X).
+#' But since we want X - H_W X, not (I - H_W)X in weighted space,
+#' we compute directly.
+#'
+#' @param proj GOLS projection from \code{\link{precompute_gols_projection}}.
+#' @param X_mat Response matrix (n x K).
+#' @return Residual matrix (n x K).
+#' @keywords internal
+fast_gols_residuals <- function(proj, X_mat) {
+  ## X_w = sqrt(W) * X
+  X_w <- proj$sqrt_W * X_mat
+  ## H_w X_w = Q_w Q_w' X_w  (projection in weighted space)
+  fitted_w <- proj$Q_w %*% crossprod(proj$Q_w, X_w)
+  ## Convert back: fitted = (1/sqrt(W)) * fitted_w
+  fitted_orig <- fitted_w / proj$sqrt_W
+  ## Residuals
+  X_mat - fitted_orig
 }
 
 # ---- Vectorized helpers for lrm fast path ----
