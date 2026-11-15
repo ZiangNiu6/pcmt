@@ -8,19 +8,15 @@
 #' @param Y Response variable. Numeric vector or single-column matrix.
 #' @param X Covariate of interest. Numeric vector or matrix.
 #' @param Z Conditioning variables. Numeric vector or matrix.
-#' @param reg_YonZ Regression method for Y on Z. Character string (default "rf")
-#'   or a function. See \code{comets} package for available methods.
-#' @param reg_XonZ Regression method for X on Z. Character string (default "rf")
-#'   or a function.
+#' @param reg_YonZ,reg_XonZ Regression method for Y on Z and X on Z.
+#'   Only \code{"rf"} (random forests) is supported in this paper-specific package.
 #' @param args_YonZ Optional list of additional arguments for the Y on Z regression.
 #' @param args_XonZ Optional list of additional arguments for the X on Z regression.
 #' @param B Number of permutations (default 499). When \code{h} is specified,
 #'   this serves as the deterministic cap \eqn{T_{max}} on the number of
 #'   sequential permutations.
-#' @param n_cores Number of cores for parallel permutation loop (default 1,
-#'   sequential). Only used when the lrm fast path is not applicable and
-#'   adaptive permutation is not active. Requires the \code{parallel} package.
-#'   Uses \code{parallel::mclapply} (not available on Windows).
+#' @param n_cores Retained for reproduction-script compatibility. Must be 1;
+#'   this package runs permutation draws sequentially.
 #' @param h Tuning parameter for adaptive permutation (default NULL, which
 #'   uses the standard fixed-B permutation). A positive integer controlling
 #'   early stopping: the procedure stops once \code{h} permutation scores
@@ -28,8 +24,8 @@
 #'   below \code{alpha} (rejection). Recommended values are between 10 and 30.
 #' @param alpha Significance level for adaptive stopping rules (default 0.05).
 #'   Only used when \code{h} is not NULL.
-#' @param alternative Type of alternative hypothesis. One of \code{"two.sided"},
-#'   \code{"greater"} (default), or \code{"less"}.
+#' @param alternative Type of alternative hypothesis. One of \code{"two.sided"} (default),
+#'   \code{"greater"}, or \code{"less"}.
 #' @param return_fitted_models Logical. If TRUE, return fitted regression models
 #'   in the output.
 #'
@@ -76,7 +72,8 @@
 #' Z <- matrix(rnorm(n), ncol = 1)
 #' X <- Z + rnorm(n)
 #' Y <- Z + rnorm(n)  # X _||_ Y | Z
-#' result <- perm_gcm(Y, X, Z, reg_YonZ = "lrm", reg_XonZ = "lrm", B = 199)
+#' result <- perm_gcm(Y, X, Z, args_YonZ = list(num.trees = 20, num.threads = 1),
+#'                    args_XonZ = list(num.trees = 20, num.threads = 1), B = 19)
 #' print(result)
 #' }
 #'
@@ -91,11 +88,20 @@ perm_gcm <- function(Y, X, Z,
                      alternative = c("two.sided", "greater", "less"),
                      return_fitted_models = FALSE) {
   alternative <- match.arg(alternative)
-  B <- as.integer(B)
+  controls <- validate_permutation_controls(B, n_cores, h, alpha)
+  B <- controls$B
+  h <- controls$h
   adaptive <- !is.null(h)
-  if (adaptive) {
-    h <- as.integer(h)
-    stopifnot(h >= 1L, alpha > 0, alpha < 1)
+
+  validate_rf_methods(list(reg_YonZ = reg_YonZ, reg_XonZ = reg_XonZ))
+  validate_numeric_data(Y, "Y")
+  validate_numeric_data(X, "X")
+  validate_numeric_data(Z, "Z")
+  if (NCOL(Y) != 1L || NCOL(X) != 1L) {
+    stop("Y and X must each have one column.", call. = FALSE)
+  }
+  if (NROW(Y) < 4L || NROW(X) != NROW(Y) || NROW(Z) != NROW(Y)) {
+    stop("Y, X and Z must have the same number of rows (at least four).", call. = FALSE)
   }
 
   ## Data validation
@@ -109,15 +115,6 @@ perm_gcm <- function(Y, X, Z,
   rY <- stats::residuals(mY, response = Y, data = Z)
 
   ## Step 2: Fit X on Z -> residuals rX (original)
-  ## For gols: inject Y|Z fitted values and theta into args
-  if (identical(reg_XonZ, "gols")) {
-    mu_Y <- c(Y) - c(rY)  # fitted values from Y|Z model
-    if (is.null(args_XonZ[["theta"]])) {
-      stop("reg_XonZ = \"gols\" requires args_XonZ$theta ",
-           "(NB dispersion parameter).")
-    }
-    args_XonZ[["mu_Y"]] <- mu_Y
-  }
   mX <- fit_regression(y = X, x = Z, method = reg_XonZ, args = args_XonZ)
   rX <- stats::residuals(mX, response = X, data = Z)
 
@@ -182,104 +179,6 @@ perm_gcm <- function(Y, X, Z,
         p_AV = traj_pAV[seq_len(actual_B)]
       )
     )
-  } else if (is_lrm_fastpath(reg_XonZ, args_XonZ)) {
-    ## --- Vectorized lrm fast path ---
-    Q <- precompute_qr_projection(Z)
-    perm_mat <- replicate(B, sample.int(n))
-
-    if (NCOL(X) == 1L) {
-      ## Univariate X: single batch matrix multiply
-      X_perm_mat <- apply_permutations(c(X), perm_mat)
-      rX_perm_mat <- fast_lrm_residuals(Q, X_perm_mat)
-      R_perm_mat <- rX_perm_mat * c(rY)
-      T_perm <- vectorized_studentized_stat(R_perm_mat)
-    } else {
-      ## Multivariate X: accumulate sums across columns
-      d <- NCOL(X)
-      nd <- as.numeric(n * d)
-      S1 <- numeric(B)
-      S2 <- numeric(B)
-      for (j in seq_len(d)) {
-        Xj_perm_mat <- apply_permutations(X[, j], perm_mat)
-        rXj_perm_mat <- fast_lrm_residuals(Q, Xj_perm_mat)
-        Rj <- rXj_perm_mat * c(rY)
-        S1 <- S1 + colSums(Rj)
-        S2 <- S2 + colSums(Rj^2)
-      }
-      mean_vals <- S1 / nd
-      var_vals <- S2 / nd - mean_vals^2
-      var_vals[var_vals <= 0] <- Inf
-      T_perm <- sqrt(nd) * mean_vals / sqrt(var_vals)
-    }
-    pval <- perm_pvalue(T_obs, T_perm, alternative)
-  } else if (is_nslrm_fastpath(reg_XonZ, args_XonZ)) {
-    ## --- Vectorized nslrm fast path (natural spline + OLS) ---
-    Q <- precompute_nslrm_projection(mX)
-    perm_mat <- replicate(B, sample.int(n))
-
-    if (NCOL(X) == 1L) {
-      X_perm_mat <- apply_permutations(c(X), perm_mat)
-      rX_perm_mat <- fast_lrm_residuals(Q, X_perm_mat)
-      R_perm_mat <- rX_perm_mat * c(rY)
-      T_perm <- vectorized_studentized_stat(R_perm_mat)
-    } else {
-      d <- NCOL(X)
-      nd <- as.numeric(n * d)
-      S1 <- numeric(B)
-      S2 <- numeric(B)
-      for (j in seq_len(d)) {
-        Xj_perm_mat <- apply_permutations(X[, j], perm_mat)
-        rXj_perm_mat <- fast_lrm_residuals(Q, Xj_perm_mat)
-        Rj <- rXj_perm_mat * c(rY)
-        S1 <- S1 + colSums(Rj)
-        S2 <- S2 + colSums(Rj^2)
-      }
-      mean_vals <- S1 / nd
-      var_vals <- S2 / nd - mean_vals^2
-      var_vals[var_vals <= 0] <- Inf
-      T_perm <- sqrt(nd) * mean_vals / sqrt(var_vals)
-    }
-    pval <- perm_pvalue(T_obs, T_perm, alternative)
-  } else if (is_gols_fastpath(reg_XonZ, args_XonZ)) {
-    ## --- Vectorized gols fast path (GLS with NB weights) ---
-    gols_proj <- precompute_gols_projection(mX)
-    perm_mat <- replicate(B, sample.int(n))
-
-    if (NCOL(X) == 1L) {
-      X_perm_mat <- apply_permutations(c(X), perm_mat)
-      rX_perm_mat <- fast_gols_residuals(gols_proj, X_perm_mat)
-      R_perm_mat <- rX_perm_mat * c(rY)
-      T_perm <- vectorized_studentized_stat(R_perm_mat)
-    } else {
-      d <- NCOL(X)
-      nd <- as.numeric(n * d)
-      S1 <- numeric(B)
-      S2 <- numeric(B)
-      for (j in seq_len(d)) {
-        Xj_perm_mat <- apply_permutations(X[, j], perm_mat)
-        rXj_perm_mat <- fast_gols_residuals(gols_proj, Xj_perm_mat)
-        Rj <- rXj_perm_mat * c(rY)
-        S1 <- S1 + colSums(Rj)
-        S2 <- S2 + colSums(Rj^2)
-      }
-      mean_vals <- S1 / nd
-      var_vals <- S2 / nd - mean_vals^2
-      var_vals[var_vals <= 0] <- Inf
-      T_perm <- sqrt(nd) * mean_vals / sqrt(var_vals)
-    }
-    pval <- perm_pvalue(T_obs, T_perm, alternative)
-  } else if (n_cores > 1L && requireNamespace("parallel", quietly = TRUE)) {
-    ## --- Parallel loop for non-lrm methods ---
-    T_perm <- unlist(parallel::mclapply(seq_len(B), function(b) {
-      perm <- sample.int(n)
-      X_perm <- X[perm, , drop = FALSE]
-      mX_perm <- fit_regression(y = X_perm, x = Z, method = reg_XonZ,
-                                args = args_XonZ)
-      rX_perm <- stats::residuals(mX_perm, response = X_perm, data = Z)
-      R_perm <- c(rX_perm) * c(rY)
-      studentized_stat(R_perm)
-    }, mc.cores = n_cores))
-    pval <- perm_pvalue(T_obs, T_perm, alternative)
   } else {
     ## --- Sequential loop (original) ---
     T_perm <- numeric(B)

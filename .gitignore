@@ -1,7 +1,12 @@
 /doc/
 /Meta/
 /inst/doc/
-vignettes/*_cache/
-vignettes/*_files/
-vignettes/*.html
-*.Rproj.user
+.DS_Store
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+.claude/
+*.Rproj
+*.Rcheck/
+*.tar.gz

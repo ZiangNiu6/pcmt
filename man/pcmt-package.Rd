@@ -6,10 +6,19 @@
 \alias{pcmt-package}
 \title{pcmt: Permutation-Calibrated Conditional Independence Tests}
 \description{
-Permutation-calibrated variants of the generalised covariance measure (GCM), projected covariance measure (PCM), and weighted GCM (WGCM) tests for conditional independence. These tests achieve exact validity under a strong exchangeable null and asymptotic validity under the weaker conditional null, providing two-way robustness. Built on top of the 'comets' package regression infrastructure.
+Random-forest implementations of permutation-calibrated generalised covariance measure (GCM) and projected covariance measure (PCM) tests, together with adaptive resampling for multiple testing. Implements methods of Ai and Niu (2026) \doi{10.48550/arXiv.2611.03255}, building on the GCM of Shah and Peters (2020) \doi{10.1214/19-AOS1857} and the PCM of Lundborg et al. (2024) \doi{10.1214/24-AOS2447}. Uses the 'comets' regression infrastructure. Finite-sample validity holds when the exposure is independent of the outcome and covariates. Validity under conditional independence is asymptotic and requires nuisance-estimation and permutation-stability conditions.
+}
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://github.com/ZiangNiu6/pcmt}
+  \item \url{https://arxiv.org/abs/2611.03255}
+  \item Report bugs at \url{https://github.com/ZiangNiu6/pcmt/issues}
+}
+
 }
 \author{
-\strong{Maintainer}: Ziang Niu \email{ziangniu@example.com}
+\strong{Maintainer}: Ziang Niu \email{ziangniu@wharton.upenn.edu}
 
 }
 \keyword{internal}

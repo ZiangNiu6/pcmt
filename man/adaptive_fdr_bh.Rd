@@ -33,8 +33,8 @@ remaining hypotheses are not rejected and their p-values are returned at
 their last anytime-valid value.}
 
 \item{alternative}{One of \code{"greater"} (default), \code{"less"}, or
-\code{"two.sided"}.  Statistics are mapped to scores via
-\code{\link{score_map}} before comparison.}
+\code{"two.sided"}. Statistics are compared directly, negated, or taken
+in absolute value, respectively.}
 }
 \value{
 A list with components:
@@ -53,9 +53,8 @@ each hypothesis was stopped (\code{NA} if still active).}
 }
 }
 \description{
-Generic implementation of the adaptive permutation FDR-control procedure of
-Fischer, Barry, and Ramdas (2024), as described in Algorithm 5 of Barry,
-Niu, Katsevich, and Lin (2025).  The procedure processes \eqn{m} hypotheses
+Implements the adaptive resampling procedure used in the manuscript.
+The procedure processes \eqn{m} hypotheses
 simultaneously: each round it draws one permuted statistic per active
 hypothesis, updates a per-hypothesis anytime-valid p-value
 \eqn{p^i_t = h / (t + h - K^i_t)}, applies the BH rejection threshold to
@@ -66,14 +65,17 @@ both sticky: once a hypothesis leaves the active set its p-value is frozen
 at its last value.
 }
 \details{
-The anytime-valid p-value of Fischer and Ramdas (2024) is
+The anytime-valid p-value is
 \deqn{p^i_t = h / (t + h - K^i_t),}
 where \eqn{K^i_t = \sum_{s=1}^{t} \mathbb{1}\{S^i_s \ge S^i_{\text{orig}}\}}
-and \eqn{S} is the score returned by \code{score_map}.  When
+and \eqn{S} is the corresponding one- or two-sided score. When
 \eqn{K^i_t = h}, the hypothesis is moved to the futility set and its
 p-value is frozen at \eqn{h / t}.  Active-hypothesis p-values are
 monotonically decreasing in \eqn{t}, so the BH threshold is monotonically
 increasing and rejection is sticky.
+
+An FDR interpretation requires valid resampling p-values and dependence
+conditions under which the Benjamini--Hochberg procedure controls FDR.
 }
 \examples{
 \donttest{
@@ -87,6 +89,8 @@ res$rejected
 
 }
 \references{
+Ai and Niu (2026), \doi{10.48550/arXiv.2611.03255}.
+
 Fischer, L., Barry, T., and Ramdas, A. (2024). Multiple testing with
 anytime-valid Monte Carlo p-values. arXiv:2404.15586.
 

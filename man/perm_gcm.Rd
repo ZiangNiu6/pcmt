@@ -27,11 +27,8 @@ perm_gcm(
 
 \item{Z}{Conditioning variables. Numeric vector or matrix.}
 
-\item{reg_YonZ}{Regression method for Y on Z. Character string (default "rf")
-or a function. See \code{comets} package for available methods.}
-
-\item{reg_XonZ}{Regression method for X on Z. Character string (default "rf")
-or a function.}
+\item{reg_YonZ, reg_XonZ}{Regression method for Y on Z and X on Z.
+Only \code{"rf"} (random forests) is supported in this paper-specific package.}
 
 \item{args_YonZ}{Optional list of additional arguments for the Y on Z regression.}
 
@@ -41,10 +38,8 @@ or a function.}
 this serves as the deterministic cap \eqn{T_{max}} on the number of
 sequential permutations.}
 
-\item{n_cores}{Number of cores for parallel permutation loop (default 1,
-sequential). Only used when the lrm fast path is not applicable and
-adaptive permutation is not active. Requires the \code{parallel} package.
-Uses \code{parallel::mclapply} (not available on Windows).}
+\item{n_cores}{Retained for reproduction-script compatibility. Must be 1;
+this package runs permutation draws sequentially.}
 
 \item{h}{Tuning parameter for adaptive permutation (default NULL, which
 uses the standard fixed-B permutation). A positive integer controlling
@@ -55,8 +50,8 @@ below \code{alpha} (rejection). Recommended values are between 10 and 30.}
 \item{alpha}{Significance level for adaptive stopping rules (default 0.05).
 Only used when \code{h} is not NULL.}
 
-\item{alternative}{Type of alternative hypothesis. One of \code{"two.sided"},
-\code{"greater"} (default), or \code{"less"}.}
+\item{alternative}{Type of alternative hypothesis. One of \code{"two.sided"} (default),
+\code{"greater"}, or \code{"less"}.}
 
 \item{return_fitted_models}{Logical. If TRUE, return fitted regression models
 in the output.}
@@ -111,7 +106,8 @@ n <- 200
 Z <- matrix(rnorm(n), ncol = 1)
 X <- Z + rnorm(n)
 Y <- Z + rnorm(n)  # X _||_ Y | Z
-result <- perm_gcm(Y, X, Z, reg_YonZ = "lrm", reg_XonZ = "lrm", B = 199)
+result <- perm_gcm(Y, X, Z, args_YonZ = list(num.trees = 20, num.threads = 1),
+                   args_XonZ = list(num.trees = 20, num.threads = 1), B = 19)
 print(result)
 }
 

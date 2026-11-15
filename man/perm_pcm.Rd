@@ -37,7 +37,8 @@ If NULL, tests Y indep X_j given X_rest.}
 
 \item{target}{Integer index of the target variable in X (default 1).}
 
-\item{reg_YonXZ}{Regression method for Y on (X, Z), the full model on D2.}
+\item{reg_YonXZ}{Regression method for Y on (X, Z), the full model on D2.
+All four regression methods must be \code{"rf"} (random forests).}
 
 \item{reg_YonZ}{Regression method for Y on the conditioning set, reduced model on D1.}
 
@@ -50,7 +51,8 @@ conditioning set on D1.}
 \item{args_YonXZ, args_YonZ, args_YhatonZ, args_RonZ}{Optional lists of
 additional arguments for each regression.}
 
-\item{frac}{Fraction of data for D1 (test fold). Default 0.5.}
+\item{frac}{Fraction assigned to D2 (direction estimation). Default 0.5.
+Ignored when \code{indices} is supplied.}
 
 \item{indices}{Optional pre-specified indices for D2 (direction estimation fold).}
 
@@ -58,10 +60,8 @@ additional arguments for each regression.}
 this serves as the deterministic cap \eqn{T_{max}} on the number of
 sequential permutations.}
 
-\item{n_cores}{Number of cores for parallel permutation loop (default 1,
-sequential). Only used when no lrm fast path is applicable and
-adaptive permutation is not active. Requires the \code{parallel} package.
-Uses \code{parallel::mclapply} (not available on Windows).}
+\item{n_cores}{Retained for reproduction-script compatibility. Must be 1;
+this package runs permutation draws sequentially.}
 
 \item{h}{Tuning parameter for adaptive permutation (default NULL, which
 uses the standard fixed-B permutation). A positive integer controlling
@@ -72,8 +72,8 @@ below \code{alpha} (rejection). Recommended values are between 10 and 30.}
 \item{alpha}{Significance level for adaptive stopping rules (default 0.05).
 Only used when \code{h} is not NULL.}
 
-\item{alternative}{Type of alternative hypothesis. One of \code{"two.sided"},
-\code{"greater"} (default), or \code{"less"}.}
+\item{alternative}{Type of alternative hypothesis. One of \code{"two.sided"} (default),
+\code{"greater"}, or \code{"less"}.}
 
 \item{return_fitted_models}{Logical. If TRUE, return fitted regression models.}
 }
@@ -88,6 +88,8 @@ An object of class \code{c("perm_pcm", "htest")} with components:
 \item{alternative}{The alternative hypothesis.}
 \item{rY}{Residuals of Y from reduced model on D1.}
 \item{rF}{Residuals of the direction from projection on D1.}
+\item{D1_indices, D2_indices}{Observation indices assigned to the testing
+and direction-estimation folds, respectively.}
 \item{perm_stats}{Vector of permutation test statistics (length B, or
 shorter if adaptive permutation stopped early).}
 \item{adaptive}{List with adaptive permutation details (if \code{h} was
@@ -107,9 +109,10 @@ and asymptotically valid under the weaker conditional null (under
 permutation stability conditions).
 }
 \details{
-The algorithm (from the permuted PCM mini-paper, Algorithm 1) proceeds:
+Permutation calibration proceeds as follows:
 \enumerate{
-\item Split data into D1 (test, size n) and D2 (direction, size n).
+\item Split data into D1 (testing) and D2 (direction estimation), using
+\code{frac} or the supplied D2 \code{indices}.
 \item On D2 (fitted once, kept fixed): fit full model and projection to
 estimate the direction function.
 \item On D1: fit reduced model for Y residuals, compute direction values,
@@ -125,8 +128,9 @@ set.seed(42)
 n <- 400
 X <- matrix(rnorm(n * 3), ncol = 3)
 Y <- X[, 2] + X[, 3] + rnorm(n)  # Y _||_ X_1 | X_{-1}
-result <- perm_pcm(Y, X, target = 1, reg_YonXZ = "lrm",
-  reg_YonZ = "lrm", reg_YhatonZ = "lrm", reg_RonZ = "lrm", B = 199)
+rf <- list(num.trees = 20, num.threads = 1)
+result <- perm_pcm(Y, X, target = 1, args_YonXZ = rf,
+  args_YonZ = rf, args_YhatonZ = rf, args_RonZ = rf, B = 19)
 print(result)
 }
 

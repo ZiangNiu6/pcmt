@@ -3,28 +3,26 @@ Title: Permutation-Calibrated Conditional Independence Tests
 Version: 0.1.0
 Authors@R:
     person("Ziang", "Niu", role = c("aut", "cre"),
-           email = "ziangniu@example.com")
-Description: Permutation-calibrated variants of the generalised covariance measure
-    (GCM), projected covariance measure (PCM), and weighted GCM (WGCM) tests for
-    conditional independence. These tests achieve exact validity under a strong
-    exchangeable null and asymptotic validity under the weaker conditional null,
-    providing two-way robustness. Built on top of the 'comets' package regression
-    infrastructure.
+           email = "ziangniu@wharton.upenn.edu")
+Description: Random-forest implementations of permutation-calibrated generalised
+    covariance measure (GCM) and projected covariance measure (PCM) tests,
+    together with adaptive resampling for multiple testing. Implements methods
+    of Ai and Niu (2026) <doi:10.48550/arXiv.2611.03255>, building on the GCM of
+    Shah and Peters (2020) <doi:10.1214/19-AOS1857> and the PCM of Lundborg et al.
+    (2024) <doi:10.1214/24-AOS2447>. Uses the 'comets' regression infrastructure.
+    Finite-sample validity holds when the exposure is independent of the outcome
+    and covariates. Validity under conditional independence is asymptotic and
+    requires nuisance-estimation and permutation-stability conditions.
 License: GPL (>= 3)
+URL: https://github.com/ZiangNiu6/pcmt,
+    https://arxiv.org/abs/2611.03255
+BugReports: https://github.com/ZiangNiu6/pcmt/issues
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.3
+RoxygenNote: 7.3.2
 Imports:
-    comets,
-    splines,
+    comets (>= 0.2-2),
     stats
 Suggests:
-    mgcv,
-    parallel,
-    ranger,
-    testthat (>= 3.0.0),
-    ggplot2,
-    knitr,
-    rmarkdown
-VignetteBuilder: knitr
+    testthat (>= 3.0.0)
 Config/testthat/edition: 3

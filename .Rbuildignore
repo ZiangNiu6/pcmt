@@ -1,6 +1,7 @@
-^renv$
-^renv\.lock$
 ^doc$
+^\.git$
 ^Meta$
 ^\.Rproj\.user$
-^benchmark_adaptive\.R$
+^.*\.Rproj$
+^\.DS_Store$
+^\.claude$

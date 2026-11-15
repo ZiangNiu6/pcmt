@@ -12,6 +12,7 @@
 #'   If NULL, tests Y indep X_j given X_rest.
 #' @param target Integer index of the target variable in X (default 1).
 #' @param reg_YonXZ Regression method for Y on (X, Z), the full model on D2.
+#'   All four regression methods must be \code{"rf"} (random forests).
 #' @param reg_YonZ Regression method for Y on the conditioning set, reduced model on D1.
 #' @param reg_YhatonZ Regression method for projecting full-model predictions
 #'   onto the conditioning set on D2.
@@ -19,15 +20,14 @@
 #'   conditioning set on D1.
 #' @param args_YonXZ,args_YonZ,args_YhatonZ,args_RonZ Optional lists of
 #'   additional arguments for each regression.
-#' @param frac Fraction of data for D1 (test fold). Default 0.5.
+#' @param frac Fraction assigned to D2 (direction estimation). Default 0.5.
+#'   Ignored when \code{indices} is supplied.
 #' @param indices Optional pre-specified indices for D2 (direction estimation fold).
 #' @param B Number of permutations (default 499). When \code{h} is specified,
 #'   this serves as the deterministic cap \eqn{T_{max}} on the number of
 #'   sequential permutations.
-#' @param n_cores Number of cores for parallel permutation loop (default 1,
-#'   sequential). Only used when no lrm fast path is applicable and
-#'   adaptive permutation is not active. Requires the \code{parallel} package.
-#'   Uses \code{parallel::mclapply} (not available on Windows).
+#' @param n_cores Retained for reproduction-script compatibility. Must be 1;
+#'   this package runs permutation draws sequentially.
 #' @param h Tuning parameter for adaptive permutation (default NULL, which
 #'   uses the standard fixed-B permutation). A positive integer controlling
 #'   early stopping: the procedure stops once \code{h} permutation scores
@@ -35,14 +35,15 @@
 #'   below \code{alpha} (rejection). Recommended values are between 10 and 30.
 #' @param alpha Significance level for adaptive stopping rules (default 0.05).
 #'   Only used when \code{h} is not NULL.
-#' @param alternative Type of alternative hypothesis. One of \code{"two.sided"},
-#'   \code{"greater"} (default), or \code{"less"}.
+#' @param alternative Type of alternative hypothesis. One of \code{"two.sided"} (default),
+#'   \code{"greater"}, or \code{"less"}.
 #' @param return_fitted_models Logical. If TRUE, return fitted regression models.
 #'
 #' @details
-#' The algorithm (from the permuted PCM mini-paper, Algorithm 1) proceeds:
+#' Permutation calibration proceeds as follows:
 #' \enumerate{
-#'   \item Split data into D1 (test, size n) and D2 (direction, size n).
+#'   \item Split data into D1 (testing) and D2 (direction estimation), using
+#'     \code{frac} or the supplied D2 \code{indices}.
 #'   \item On D2 (fitted once, kept fixed): fit full model and projection to
 #'     estimate the direction function.
 #'   \item On D1: fit reduced model for Y residuals, compute direction values,
@@ -62,6 +63,8 @@
 #'   \item{alternative}{The alternative hypothesis.}
 #'   \item{rY}{Residuals of Y from reduced model on D1.}
 #'   \item{rF}{Residuals of the direction from projection on D1.}
+#'   \item{D1_indices, D2_indices}{Observation indices assigned to the testing
+#'     and direction-estimation folds, respectively.}
 #'   \item{perm_stats}{Vector of permutation test statistics (length B, or
 #'     shorter if adaptive permutation stopped early).}
 #'   \item{adaptive}{List with adaptive permutation details (if \code{h} was
@@ -79,8 +82,9 @@
 #' n <- 400
 #' X <- matrix(rnorm(n * 3), ncol = 3)
 #' Y <- X[, 2] + X[, 3] + rnorm(n)  # Y _||_ X_1 | X_{-1}
-#' result <- perm_pcm(Y, X, target = 1, reg_YonXZ = "lrm",
-#'   reg_YonZ = "lrm", reg_YhatonZ = "lrm", reg_RonZ = "lrm", B = 199)
+#' rf <- list(num.trees = 20, num.threads = 1)
+#' result <- perm_pcm(Y, X, target = 1, args_YonXZ = rf,
+#'   args_YonZ = rf, args_YhatonZ = rf, args_RonZ = rf, B = 19)
 #' print(result)
 #' }
 #'
@@ -99,11 +103,27 @@ perm_pcm <- function(Y, X, Z = NULL,
                      alternative = c("two.sided", "greater", "less"),
                      return_fitted_models = FALSE) {
   alternative <- match.arg(alternative)
-  B <- as.integer(B)
+  controls <- validate_permutation_controls(B, n_cores, h, alpha)
+  B <- controls$B
+  h <- controls$h
   adaptive <- !is.null(h)
-  if (adaptive) {
-    h <- as.integer(h)
-    stopifnot(h >= 1L, alpha > 0, alpha < 1)
+
+  validate_rf_methods(list(reg_YonXZ = reg_YonXZ, reg_YonZ = reg_YonZ,
+                           reg_YhatonZ = reg_YhatonZ, reg_RonZ = reg_RonZ))
+  validate_numeric_data(Y, "Y")
+  validate_numeric_data(X, "X")
+  if (NCOL(Y) != 1L || NROW(Y) != NROW(X) || NROW(X) < 4L) {
+    stop("Y must have one column and match the rows of X (at least four).", call. = FALSE)
+  }
+  target <- validate_positive_integer(target, "target")
+  if (target > NCOL(X)) stop("target is out of range for X.", call. = FALSE)
+  if (!is.null(Z)) {
+    validate_numeric_data(Z, "Z")
+    if (NROW(Z) != NROW(X)) stop("Z and X must have the same number of rows.", call. = FALSE)
+  }
+  n_conditioning <- NCOL(X) - 1L + (if (is.null(Z)) 0L else NCOL(Z))
+  if (n_conditioning < 1L) {
+    stop("Provide at least one conditioning variable in X or Z.", call. = FALSE)
   }
 
   ## Data validation
@@ -128,10 +148,17 @@ perm_pcm <- function(Y, X, Z = NULL,
   XW_all <- cbind(Xj_all, W_all)
 
   ## Sample splitting: D2 = direction (indices), D1 = test (complement)
-  ## Following the paper: |D1| = |D2| = n
+  ## The paper uses equal halves; frac or indices determines D2 here.
   idx_D2 <- indices
   if (is.null(idx_D2)) {
-    idx_D2 <- sample.int(n_total, ceiling(frac * n_total))
+    validate_fraction(frac)
+    n_D2 <- ceiling(frac * n_total)
+    if (n_D2 < 2L || n_total - n_D2 < 2L) {
+      stop("frac must leave at least two observations in each fold.", call. = FALSE)
+    }
+    idx_D2 <- sample.int(n_total, n_D2)
+  } else {
+    validate_split_indices(idx_D2, n_total)
   }
   idx_D1 <- setdiff(seq_len(n_total), idx_D2)
   n <- length(idx_D1)
@@ -179,11 +206,6 @@ perm_pcm <- function(Y, X, Z = NULL,
 
   ## ---- Permutation loop ----
   adaptive_info <- NULL
-  lrm_full <- is_lrm_fastpath(reg_YonXZ, args_YonXZ) &&
-              is_lrm_fastpath(reg_YhatonZ, args_YhatonZ) &&
-              is_lrm_fastpath(reg_RonZ, args_RonZ)
-  lrm_proj <- is_lrm_fastpath(reg_RonZ, args_RonZ)
-  nslrm_proj <- is_nslrm_fastpath(reg_RonZ, args_RonZ)
 
   if (adaptive) {
     ## --- Adaptive sequential loop ---
@@ -241,89 +263,6 @@ perm_pcm <- function(Y, X, Z = NULL,
         p_AV = traj_pAV[seq_len(actual_B)]
       )
     )
-  } else if (lrm_full) {
-    ## --- Full lrm fast path ---
-    ## Decompose fhat_perm = beta_j * Xj_perm + const_fhat
-    cfx_p <- stats::coef(m_hat_p)
-    cfx_p[is.na(cfx_p)] <- 0
-    beta_j <- cfx_p[2]  # coefficient for Xj (1st predictor after intercept)
-
-    ## Constant part: predict(m_hat_p, Xj=0, W) - predict(m_hat_qj, W)
-    cfx_W <- cfx_p[-(1:2)]
-    if (length(cfx_W) > 0L) {
-      pred_W_const <- c(cfx_p[1] + as.matrix(W_D1) %*% cfx_W)
-    } else {
-      pred_W_const <- rep(cfx_p[1], n)
-    }
-    qj_pred <- c(stats::predict(m_hat_qj, data = W_D1))
-    const_fhat <- pred_W_const - qj_pred
-
-    ## Precompute projection matrix Q_W and fixed residual component
-    Q_W <- precompute_qr_projection(W_D1)
-    M_W_const <- c(fast_lrm_residuals(Q_W, matrix(const_fhat, ncol = 1)))
-
-    ## All permutations at once
-    perm_mat <- replicate(B, sample.int(n))
-    Xj_perm_mat <- apply_permutations(c(Xj_D1), perm_mat)
-
-    ## rF_perm = beta_j * M_W %*% Xj_perm + M_W_const
-    M_W_Xj_perm <- fast_lrm_residuals(Q_W, Xj_perm_mat)
-    rF_perm_mat <- beta_j * M_W_Xj_perm + M_W_const
-
-    L_perm_mat <- c(rY) * rF_perm_mat
-    T_perm <- vectorized_studentized_stat(L_perm_mat)
-    pval <- perm_pvalue(T_obs, T_perm, alternative)
-
-  } else if (lrm_proj) {
-    ## --- Partial fast path: loop over compute_fhat, batch projection ---
-    Q_W <- precompute_qr_projection(W_D1)
-    perm_mat <- replicate(B, sample.int(n))
-    fhat_perm_mat <- matrix(NA_real_, n, B)
-
-    for (b in seq_len(B)) {
-      Xj_perm <- Xj_D1[perm_mat[, b], , drop = FALSE]
-      XW_D1_perm <- cbind(Xj_perm, W_D1)
-      fhat_perm_mat[, b] <- compute_fhat(XW_D1_perm, W_D1)
-    }
-
-    rF_perm_mat <- fast_lrm_residuals(Q_W, fhat_perm_mat)
-    L_perm_mat <- c(rY) * rF_perm_mat
-    T_perm <- vectorized_studentized_stat(L_perm_mat)
-    pval <- perm_pvalue(T_obs, T_perm, alternative)
-
-  } else if (nslrm_proj) {
-    ## --- Partial nslrm fast path: loop over compute_fhat, batch projection ---
-    ns_df <- if (!is.null(args_RonZ$df)) args_RonZ$df else 4L
-    tmp_fit <- fit_nslrm(y = fhat_D1, x = W_D1, df = ns_df)
-    Q_W <- precompute_nslrm_projection(tmp_fit)
-    perm_mat <- replicate(B, sample.int(n))
-    fhat_perm_mat <- matrix(NA_real_, n, B)
-
-    for (b in seq_len(B)) {
-      Xj_perm <- Xj_D1[perm_mat[, b], , drop = FALSE]
-      XW_D1_perm <- cbind(Xj_perm, W_D1)
-      fhat_perm_mat[, b] <- compute_fhat(XW_D1_perm, W_D1)
-    }
-
-    rF_perm_mat <- fast_lrm_residuals(Q_W, fhat_perm_mat)
-    L_perm_mat <- c(rY) * rF_perm_mat
-    T_perm <- vectorized_studentized_stat(L_perm_mat)
-    pval <- perm_pvalue(T_obs, T_perm, alternative)
-
-  } else if (n_cores > 1L && requireNamespace("parallel", quietly = TRUE)) {
-    ## --- Parallel loop for non-lrm methods ---
-    T_perm <- unlist(parallel::mclapply(seq_len(B), function(b) {
-      perm <- sample.int(n)
-      Xj_perm <- Xj_D1[perm, , drop = FALSE]
-      XW_D1_perm <- cbind(Xj_perm, W_D1)
-      fhat_perm <- compute_fhat(XW_D1_perm, W_D1)
-      m_pfj_perm <- fit_regression(y = fhat_perm, x = W_D1,
-                                   method = reg_RonZ, args = args_RonZ)
-      rF_perm <- c(fhat_perm) - c(stats::predict(m_pfj_perm, data = W_D1))
-      L_perm <- rY * rF_perm
-      studentized_stat(L_perm)
-    }, mc.cores = n_cores))
-    pval <- perm_pvalue(T_obs, T_perm, alternative)
   } else {
     ## --- Sequential loop (original) ---
     T_perm <- numeric(B)
